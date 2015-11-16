@@ -7,7 +7,9 @@ from sympy.utilities.lambdify import lambdify
 import matplotlib.pyplot as plt
 from scipy.integrate import odeint
 
-from density_sdsos_l import compute_reach
+import sys
+sys.path.append('../')
+from density_sdsos import compute_reach
 
 # Initialize symbolic variables
 t, x1 = sp.symbols('t,x1')

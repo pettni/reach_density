@@ -7,14 +7,8 @@ import sympy as sp
 import numpy as np
 
 import sys
+import picos
 from mosek.fusion import *
-
-from sympy.abc import x,y,z
-
-from sympy.polys.monomials import itermonomials, monomial_count
-from sympy.polys.orderings import monomial_key
-
-from help_functions import extract_linear, flatten
 
 def _k_to_ij(k, L):
 	""" 
@@ -47,48 +41,6 @@ def _ij_to_k(i,j,L):
 	j_at1 = max(j,i)+1
 	k_at1 = int((n + n-i_at1)*(i_at1-1)/2 + j_at1)
 	return k_at1 - 1
-
-def degree(expr, variables):
-	"""Check the degree of variables 'variables' in an expression expr.
-		Warning: if the expression is factored, it will be expanded.
-				 this might be expensive.
-	"""
-	if isinstance(expr, list):
-		return max([degree(el, variables) for el in expr])
-	expr_ex = expr.expand()
-	var_idx = [i for i in range(len(expr_ex.as_terms()[1])) if expr_ex.as_terms()[1][i] in variables]
-	return max([sum(term[1][1][idx] for idx in var_idx) for term in expr_ex.as_terms()[0] ])
-
-def create_square_poly(d, variables, coef_name):
-	num_mons = monomial_count(d, len(variables))
-	num_coef = num_mons*(num_mons+1)/2
-	monomials = sorted(itermonomials(variables, d), key=monomial_key('lex', variables))
-	A = [sp.Symbol(coef_name + '_%d' % i) for i in range(num_coef)]
-	poly = sp.expand(np.dot(np.dot(get_symmetric_matrix(A), monomials), monomials))
-	return poly, A
-
-def create_square_poly_var(M, d, num_vars):
-	num_mons = monomial_count(d, len(variables))
-	num_coef = num_mons*(num_mons+1)/2
-	return M.variable(num_coef, Domain.unbounded())
-
-def get_symmetric_matrix(V):
-
-	L = len(V)
-	n = (np.sqrt(1+8*L) - 1)/2
-
-	if not n.is_integer():
-		raise TypeError("vector does not represent symmetric matrix")
-
-	n = int(n)
-
-	Q = [[None for i in range(n)] for j in range(n) ]
-
-	for k in range(L):
-		i,j = _k_to_ij(k, L)
-		Q[i][j] = Q[j][i] = V[k]
-
-	return Q
 
 def _sdd_index(i,j,n):
 	""" An n x n sdd matrix A can be written as A = sum Mij.
@@ -133,7 +85,53 @@ def setup_sdd(M, matVar):
 			M_idx = _sdd_index(i,j,n)
 			M.constraint(Expr.sub(matVar.index(A_idx), Expr.sum(Mij.pick(M_idx) ) ), Domain.equalsTo(0.0) )
 	return Mij
-			
+
+def setup_sdd_picos(prob, var, sdd_str = ''):
+	""" Make sure that the expression matVar is sdd by adding constraints to the model M.
+		Additional variables Mij of size n*(n-1)/2 x 3 are required, where  each row represents a symmetric
+		2x2 matrix
+	    Mij(k,:) is the vector Mii Mjj Mij representing [Mii Mij; Mij Mjj] for (i,j) = _k_to_ij(k)"""
+
+	# Length of vec(M)
+	num_vars = var.size[0]
+
+	if num_vars == 1:
+		# scalar case
+		prob.add_constraint('', var >= 0)
+		return None
+
+	# Side of M
+	n = int((np.sqrt(1+8*num_vars) - 1)/2)
+	print num_vars
+	print n
+
+	assert(n == (np.sqrt(1+8*num_vars) - 1)/2)
+
+	# Number of submatrices required
+	num_Mij = n*(n-1)/2
+
+	Mij = prob.add_variable('Mij_' + sdd_str, (num_Mij, 3))
+
+	# add pos and cone constraints ensuring that each Mij(k,:) is psd
+	prob.add_list_of_constraints( [Mij[k,0] >= 0 for k in range(num_Mij)], 'k', '[' + str(num_Mij) + ']' )
+	prob.add_list_of_constraints( [Mij[k,1] >= 0 for k in range(num_Mij)], 'k', '[' + str(num_Mij) + ']' )
+	prob.add_list_of_constraints( [Mij[k,0] * Mij[k,1] >= Mij[k,2]**2 for k in range(num_Mij)], 'k', '[' + str(num_Mij) + ']' )
+
+	# set Aij = Mij 
+	for i in range(n):
+		for j in range(i,n):
+			A_idx = _ij_to_k(i,j,num_vars)
+			M_idx = _sdd_index(i,j,n)
+			prob.add_constraint( var[A_idx] == picos.sum( [ Mij[k,l] for (k,l) in M_idx ] ) )
+
+	# prob.add_list_of_constraints( [ 
+	# 		var[ _ij_to_k(i,j,num_vars) ] == 
+	# 		picos.sum( [ Mij[k,l] for k,l in _sdd_index(i,j,n) ], 'k,l', '_sdd_index(i,j,n)')
+	# 			for i in range(n) for j in range(i,n) 
+	# 	], 'i,j', 'i,j : 0 <= i <= j < n' )
+
+	return Mij
+
 def is_dd(A):
 	""" Returns 'True' if A is dd (diagonally dominant), 'False' otherwise """
 
@@ -177,68 +175,3 @@ def is_sdd(A):
 	M.solve()
 
 	return False if M.getDualSolutionStatus() == SolutionStatus.Certificate else True
-
-def is_sdsos(poly, vrs):
-	d = int(np.ceil(degree(poly, vrs)/2))
-	
-	polyA, A = create_square_poly(d, vrs, 'a')
-
-	cfs = sp.Poly(poly - Apoly, vrs).coeffs()
-	Ae, be = _extract_linear(cfs, A)
-
-	M = Model('check_sdsos')
-	Avar = create_square_poly_var(M, d, len(vrs))
-	M.constraint(Expr.mul(DenseMatrix(Ae), Avar), Domain.equalsTo(be))
-
-	M.solve()
-
-def minimize_poly(p, variables, domain, sigma_d):
-	""" Lower bounds the minimum value of p in domain by solving
-
-		max  t
-		s.t.  p - t - s_i d_i sdsos  for some s_i sdsos
-	"""
-	t = sp.symbols('t')
-
-	sigma = [None for i in range(len(domain))]
-	sigma_coef = [None for i in range(len(domain))]
-
-	for i in range(len(domain)):
-		s, s_c = create_square_poly(sigma_d, variables, 'sigma'+str(i))
-		sigma[i] = s
-		sigma_coef[i] = s_c
-
-	sd_poly = p - t - np.dot(sigma, domain)
-
-	d = int(np.ceil(degree(sd_poly, variables)/2))
-
-	Apoly, A = create_square_poly(d, variables, 'a')
-
-	cfs = sp.Poly(sd_poly - Apoly, variables).coeffs()
-	Ae, be = _extract_linear(cfs, [t] + A + _flatten(sigma_coef))
- 	with Model('sdsos') as M:
-		tvar = M.variable(1, Domain.unbounded())
-		Avar = M.variable(len(A), Domain.unbounded())
-
-		# Setup multipliers
-		sigma_vars = [M.variable(len(sigma_coef[i]), Domain.unbounded()) for i in range(len(domain))]
-		for i in range(len(domain)):
-			setup_sdd(M, sigma_vars[i]) # make sl sdd
-
-		if len(domain) > 0:
-			sigma_vars_flat = Expr.vstack([var.asExpr() for var in sigma_vars])
-			tAs_vars = Expr.vstack(Expr.vstack(tvar, Avar), sigma_vars_flat) 
-		else:
-			tAs_vars = Expr.vstack(tvar, Avar) 
-
-		# Set sd_poly = Apoly
-		M.constraint(Expr.mul(DenseMatrix(Ae), tAs_vars), Domain.equalsTo(be))
-
-		# Make Apoly positive
-		Mij = setup_sdd(M, Avar)
-
-		M.objective(ObjectiveSense.Maximize, tvar)
-
-		M.solve()
-		monomials = sorted(itermonomials(variables, d), key=monomial_key('lex', variables))
-		return tvar.level()[0], sp.expand(np.dot(np.dot(get_symmetric_matrix(Avar.level()), monomials), monomials)), [sig.level() for sig in sigma_vars]

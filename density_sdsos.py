@@ -7,7 +7,10 @@ from mosek.array import *
 
 from polylintrans import *
 
-from sdd import setup_sdd, is_sdd, get_symmetric_matrix
+import picos
+import cvxopt as cvx
+
+from sdd import setup_sdd, setup_sdd_picos
 
 def poly_to_tuple(poly, variables):
 	"""
@@ -20,6 +23,9 @@ def poly_to_tuple(poly, variables):
 	return tuple([(t0, float(t1)) for t0,t1 in terms])
 
 def coef_to_poly(coef, num_var):
+	"""
+		Transform a (grlex ordered) list of coefficients to a polynomial
+	"""
 	ret = 0
 	for k in range(len(coef)):
 		midx = index_to_multiindex(k, num_var)
@@ -30,6 +36,9 @@ def coef_to_poly(coef, num_var):
 	return ret
 
 def degree(polytuple):
+	""" 
+	Compute the degree of a tuple representing a polynomial
+	"""
 	if isinstance(polytuple, list):
 		if len(polytuple) == 0:
 			return 0
@@ -38,7 +47,10 @@ def degree(polytuple):
 	return max([sum(term[0]) for term in polytuple])
 
 def Lf(d, vf):
-	""" Linear transformation representing Lf operator on a polynomial of degree d """
+	""" 
+		Linear transformation representing Lf operator on a polynomial of degree d 
+			Lf : p |--> D_t p + D_x p * f(t,x)
+	"""
 	xdim = len(vf)
 	dxi = [PolyLinTrans.diff(xdim+1, d, i) for i in range(xdim+1)]
 	L = dxi[0]
@@ -206,3 +218,123 @@ def compute_reach(data):
 		rho_sln = coef_to_poly(rho_coef_trimmed, num_var)
 
 	return (rho_sln, error)
+
+def compute_reach_fast(data):
+	deg_max = data['maxdeg_rho']
+	rho_0 = poly_to_tuple(data['rho_0'], data['variables'])
+	vf = poly_to_tuple(data['vector_field'], data['variables'])
+	domain = poly_to_tuple(data['domain'], data['variables'])
+	r = data['r']
+	tol = data['tol']
+
+	assert(deg_max % 2 == 0)
+
+	# Variables are [t x1 x2 ... xn]
+
+	#  Want to make 
+	#    b - L rho - d_i s_i^- 
+	#    b + L rho - d_i s_i^+
+	#  sdsos
+
+	num_var = len(vf) + 1
+
+	deg_rho = deg_max + 1 - degree(vf)
+
+	deg_sigma = deg_max - degree(domain)
+	deg_sigma = deg_sigma - (deg_sigma % 2)		# make it even
+
+	# half degrees for symmetric matrix variables
+	halfdeg_max = deg_max/2
+	halfdeg_sigma = deg_sigma/2	
+
+	print "Using degrees:"
+	print "Maximal degree", deg_max
+	print "deg(rho) = ", deg_rho
+	print "deg(sigma) = ", deg_sigma
+
+	# Compute number of variables  
+	n_max_mon = count_monomials_leq(num_var, deg_max)    	 # monomial representation
+	n_max_sq = count_monomials_leq(num_var, halfdeg_max) * \
+				(count_monomials_leq(num_var, halfdeg_max) + 1)/2  # square matrix representation
+	
+	n_rho = count_monomials_leq(num_var, deg_rho) 		   # number of terms in rho(t,x)
+
+	n_sigma_sq = count_monomials_leq(num_var, halfdeg_sigma) * \
+			     (count_monomials_leq(num_var, halfdeg_sigma) + 1)/2
+
+
+	########################################################
+	### Extract matrices defining linear transformations ###
+	########################################################
+
+	# Linear trans b -> coef(b)
+	b_b = PolyLinTrans(num_var)
+	b_b[(0,)*num_var][(0,)*num_var] = 1.
+	nrow, ncol, idxi, idxj, vals = b_b.to_sparse()
+	A_b_b =  cvx.spmatrix( vals, idxi, idxj, (n_max_mon, ncol) )
+
+	# Linear trans coef(rho) -> coef(Lrho)
+	Lrho_rho = Lf(deg_rho, vf)
+	nrow, ncol, idxi, idxj, vals = Lrho_rho.to_sparse()
+	A_Lfrho_rho =  cvx.spmatrix( vals, idxi, idxj, (n_max_mon, ncol) )
+
+	# Linear trans coef(s_i) -> coef(s_i d_i)
+	sidi_si = [PolyLinTrans.mul_pol(num_var, deg_sigma, dom) for dom in domain]
+	A_sidi_si = []
+	for i in range(len(domain)):
+		nrow, ncol, idxi, idxj, vals = sidi_si[i].to_sparse_matrix()
+		A_sidi_si.append( cvx.spmatrix( vals, idxi, idxj, (n_max_mon, ncol) ) )
+
+	# Transformation rho -> rho0
+	rho0_rho = PolyLinTrans.elvar(num_var, deg_rho, 0, 0)
+	nrow, ncol, idxi, idxj, vals = rho0_rho.to_sparse()
+	A_rho0_rho =   cvx.spmatrix( vals, idxi, idxj, (nrow, ncol) )
+	
+	beq = cvx.matrix(0., (A_rho0_rho.size[0],1) )
+	for arg in rho_0:
+		beq[multiindex_to_index(arg[0]),0] = arg[1]
+
+	# Constraints
+	#    rho(0,x) = rho0(x) 					(1)
+	#    Lf rho + b - sigma_i^+ d_i  sdd		(2)
+	#   -Lf rho + b - sigma_i^- d_i  sdd		(3)
+	#   sigma_i^+ sdd 							(6)
+	#   sigma_i^- sdd 							(7)
+
+	# Optimization vector is
+	#   [ rho_coef  b  sigma^+  sigma^-  K^+  K^-  extra ],
+	# where 'extra' are sdsos variables
+	#
+	# dimensions are [ n_rho  1  len(domain) * n_sigma_sq  len(domain) * n_sigma_sq  n_max_sq  n_max_sq ]
+	#
+
+	# Define optimization problem
+	prob = picos.Problem()
+
+	# Add variables
+	rho = prob.add_variable( 'rho', n_rho )
+	b = prob.add_variable( 'b', 1 )
+	sig_pos_i = [ prob.add_variable( 'sig_pos[%d]' %i, n_sigma_sq ) for i in range(len(domain)) ]
+	sig_neg_i = [ prob.add_variable( 'sig_neg[%d]' %i, n_sigma_sq ) for i in range(len(domain)) ]
+
+	# Add init constraint
+	prob.add_constraint( A_rho0_rho*rho == beq )
+
+	# Add sdd constraints
+	sdd_pos = setup_sdd_picos( prob,  A_Lfrho_rho * rho + A_b_b * b 
+				- picos.sum([A_sidi_si[i] * sig_pos_i[i] for i in range(len(domain))], 'i', '[' + str(len(domain)) + ']'), 'sdd_pos')
+	sdd_neg = setup_sdd_picos( prob, -A_Lfrho_rho * rho + A_b_b * b 
+				- picos.sum([A_sidi_si[i] * sig_neg_i[i] for i in range(len(domain))], 'i', '[' + str(len(domain)) + ']'), 'sdd_neg')
+
+	for i in range(len(domain)):
+		setup_sdd_picos( prob, sig_pos_i[i], 'sig_pos_' + str(i))
+		setup_sdd_picos( prob, sig_neg_i[i], 'sig_neg_' + str(i))
+
+	# Minimize b
+	prob.set_objective('min', b)
+
+	print prob
+
+	prob.solve(solver='mosek', verbose=True)
+
+	return (coef_to_poly(np.array(rho.value), num_var)[0], np.array(b.value)[0][0])

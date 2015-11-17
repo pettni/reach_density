@@ -152,7 +152,7 @@ class PolyLinTrans(object):
 
 	def elvar(n, d, var, val):
 		# Linear transformation corresponding to eliminating one or more of the variables
-		# by setting them to zero
+		# by setting them to val
 		p = PolyLinTrans(n)
 		for idx in _iter_idx((), n, d):
 			new_idx = list(idx)
@@ -289,7 +289,13 @@ class PolyLinTrans(object):
 			self.d0 = max(self.d0, sum(key1))
 
 	def to_sparse(self):
-		""" Return a grlex-ordered representation of the transformation """
+		""" 
+			Return a grlex-ordered representation A of the transformation.
+
+			That is, if p is a grlex coefficient vector, 
+				A p 
+			is a grlex coefficient vector of the transformed polynomial.
+		"""
 		i = []
 		j = []
 		v = []
@@ -300,13 +306,16 @@ class PolyLinTrans(object):
 				i.append(multiindex_to_index(key2))
 				j.append(multiindex_to_index(key1))
 				v.append(val)
-				nrow = max(i[-1]+1, nrow)
-				ncol = max(j[-1]+1, ncol)
 		return nrow, ncol, i, j, v
 
 	def to_sparse_matrix(self):
-		""" Return a representation of the transformation from a vector
-			representing a symmetric matrix """
+		""" Return a representation A of the transformation from a vector
+			representing a symmetric matrix.
+
+			That is, if p is a symmetric matrix vector, 
+				A p 
+			is a grlex coefficient vector of the transformed polynomial.
+		"""
 		half_deg = int(ceil(float(self.d0)/2))
 		num_mon = count_monomials_leq(self.n, half_deg)
 		len_vec = num_mon*(num_mon+1)/2

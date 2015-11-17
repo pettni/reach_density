@@ -52,8 +52,6 @@ def animate(variables, vf, rho, error, tmax):
 	ymax = xmax = 3
 
 	# convert symbolic expressions to lambdas
-	print variables
-	print vf
 	vf_fcn0 = lambdify(variables, vf[0])
 	vf_fcn1 = lambdify(variables, vf[1])
 	rho_fcn = lambdify(variables, rho)

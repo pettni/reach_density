@@ -12,7 +12,7 @@ from polylintrans import *
 import picos
 import cvxopt as cvx
 
-from sdd import setup_sdd, setup_sdd_picos, setup_sdd_mosek
+from sdd import setup_sdd, setup_sdd_picos, add_sdd_mosek
 
 def poly_to_tuple(poly, variables):
 	"""
@@ -489,26 +489,21 @@ def compute_reach_fast(data):
 	task.putcj(n_rho, 1.)
 	task.putobjsense(mosek.objsense.minimize) 
 
-	# Add constraints
+	# Add eq constraints
 	Aeq = Aeq.tocoo()
 	task.putaijlist( Aeq.row, Aeq.col, Aeq.data )
 	task.putconboundslice(0, numcon, [mosek.boundkey.fx] * numcon, beq, beq )
 
+	add_sdd_mosek( task, n_rho + 1 + 2 * len(domain) * n_sigma_sq, n_max_sq )			  # make K^+ sdd
+	add_sdd_mosek( task, n_rho + 1 + 2 * len(domain) * n_sigma_sq + n_max_sq, n_max_sq) # make K^- sdd
+
 	for j in range(len(domain)):
-		start = n_rho + 1 + j * n_sigma_sq
-		length = n_sigma_sq
-		setup_sdd_mosek( task, start, length )								# make sigma_i^+ sdd
-		setup_sdd_mosek( task, start + len(domain) * n_sigma_sq, length) 	# make sigma_i^- sdd
-
-	start = n_rho + 1 + 2 * len(domain) * n_sigma_sq
-	length = n_max_sq
-	setup_sdd_mosek( task, start, length )			# make K^+ sdd
-	setup_sdd_mosek( task, start+length, length) 	# make K^- sdd
+		add_sdd_mosek( task, n_rho + 1 + j * n_sigma_sq, n_sigma_sq )				   # make sigma_i^+ sdd
+		add_sdd_mosek( task, n_rho + 1 + (j + len(domain)) * n_sigma_sq, n_sigma_sq) # make sigma_i^- sdd
 	
-	numvar_sdd = 2 * len(domain) * n_sigma_sddvar + 2 * n_max_sddvar
-
 	task.optimize() 
 
+	# extract solution
 	opt_rho = np.zeros(n_rho)
 	opt_err = np.zeros(1)
 	task.getxxslice( mosek.soltype.itr, 0, n_rho, opt_rho )

@@ -123,7 +123,7 @@ def setup_sdd_picos(prob, var, sdd_str = ''):
 
 	return Mij
 
-def setup_sdd_mosek(task, start, length):
+def add_sdd_mosek(task, start, length):
 	''' 
 		Given a mosek task with variable vector x,
 		add variables and constraints to task such that

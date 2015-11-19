@@ -102,8 +102,6 @@ def setup_sdd_picos(prob, var, sdd_str = ''):
 
 	# Side of M
 	n = int((np.sqrt(1+8*num_vars) - 1)/2)
-	print num_vars
-	print n
 
 	assert(n == (np.sqrt(1+8*num_vars) - 1)/2)
 
@@ -117,20 +115,72 @@ def setup_sdd_picos(prob, var, sdd_str = ''):
 	prob.add_list_of_constraints( [Mij[k,1] >= 0 for k in range(num_Mij)], 'k', '[' + str(num_Mij) + ']' )
 	prob.add_list_of_constraints( [Mij[k,0] * Mij[k,1] >= Mij[k,2]**2 for k in range(num_Mij)], 'k', '[' + str(num_Mij) + ']' )
 
-	# set Aij = Mij 
-	for i in range(n):
-		for j in range(i,n):
-			A_idx = _ij_to_k(i,j,num_vars)
-			M_idx = _sdd_index(i,j,n)
-			prob.add_constraint( var[A_idx] == picos.sum( [ Mij[k,l] for (k,l) in M_idx ] ) )
-
-	# prob.add_list_of_constraints( [ 
-	# 		var[ _ij_to_k(i,j,num_vars) ] == 
-	# 		picos.sum( [ Mij[k,l] for k,l in _sdd_index(i,j,n) ], 'k,l', '_sdd_index(i,j,n)')
-	# 			for i in range(n) for j in range(i,n) 
-	# 	], 'i,j', 'i,j : 0 <= i <= j < n' )
+	prob.add_list_of_constraints( [ 
+			var[ _ij_to_k(i,j,num_vars) ] == 
+			picos.sum( [ Mij[k,l] for k,l in _sdd_index(i,j,n) ], 'k,l', '_sdd_index(i,j,n)')
+				for i in range(n) for j in range(i,n) 
+		], 'i,j', 'i,j : 0 <= i <= j < n' )
 
 	return Mij
+
+def setup_sdd_mosek(task, start, length):
+	''' 
+		Given a mosek task with variable vector x,
+		add variables and constraints to task such that
+		x[ start, start + length ] = vec(A),
+		for A a sdd matrix
+	'''
+
+	# number of existing variables / constraints
+	numvar = task.getnumvar()
+	numcon = task.getnumcon()
+
+	assert(start >= 0)
+	assert(start + length <= numvar)
+
+	# side of matrix
+	n = int((np.sqrt(1+8*length) - 1)/2)
+	assert( n == (np.sqrt(1+8*length) - 1)/2 )
+
+	# add new vars and constraints as
+	# 
+	#   [ old_constr   0  ]  [ old_vars ]    [old_rhs ]
+	#   [  0   -I  0    D ]  [ new_vars ]  = [  0     ]
+	# where I as at pos start:start+length
+
+	# we need 3 x this many new variables
+	numvar_new = n * (n-1) / 2
+
+	# add new variables and make them unbounded
+	task.appendvars(3 * numvar_new)
+	task.putvarboundslice( numvar, numvar + 3 * numvar_new, 
+				[mosek.boundkey.fr] * 3 * numvar_new, 
+				[0.] * 3 * numvar_new, 
+				[0.] * 3 * numvar_new  )
+	task.appendcons(length)
+
+	# put negative identity matrix
+	task.putaijlist( range(numcon, numcon + length), range(start, start+length), [-1.] * length)
+
+	# build 'D' matrix
+	D_row_idx = []
+	D_col_idx = []
+	D_vals = []
+
+	for row in range(length):
+		i,j = _k_to_ij(row, length)
+		sdd_idx = _sdd_index(i,j,n)
+		D_row_idx += [numcon + row] * len(sdd_idx) 
+		D_col_idx += [numvar + 3*k + l for (k,l) in sdd_idx ]
+		D_vals += [ 2. if l == 0 else 1. for (k,l) in sdd_idx ]
+
+	task.putaijlist( D_row_idx, D_col_idx, D_vals ) # add it
+
+	# put = 0 constraints
+	task.putconboundslice( numcon, numcon + length, [mosek.boundkey.fx] * length, [0.]*length, [0.]*length )
+
+	# add cone constraints
+	task.appendconesseq( [mosek.conetype.rquad] * numvar_new, [0.0] * numvar_new, [3] * numvar_new, numvar )
 
 def is_dd(A):
 	""" Returns 'True' if A is dd (diagonally dominant), 'False' otherwise """

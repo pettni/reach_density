@@ -1,7 +1,9 @@
 import numpy as np
 import sympy as sp
+import scipy.sparse 
 
 import sys
+import mosek
 from mosek.fusion import *
 from mosek.array import *
 
@@ -10,7 +12,7 @@ from polylintrans import *
 import picos
 import cvxopt as cvx
 
-from sdd import setup_sdd, setup_sdd_picos
+from sdd import setup_sdd, setup_sdd_picos, setup_sdd_mosek
 
 def poly_to_tuple(poly, variables):
 	"""
@@ -219,7 +221,7 @@ def compute_reach(data):
 
 	return (rho_sln, error)
 
-def compute_reach_fast(data):
+def compute_reach_picos(data):
 	deg_max = data['maxdeg_rho']
 	rho_0 = poly_to_tuple(data['rho_0'], data['variables'])
 	vf = poly_to_tuple(data['vector_field'], data['variables'])
@@ -229,8 +231,6 @@ def compute_reach_fast(data):
 
 	assert(deg_max % 2 == 0)
 
-	# Variables are [t x1 x2 ... xn]
-
 	#  Want to make 
 	#    b - L rho - d_i s_i^- 
 	#    b + L rho - d_i s_i^+
@@ -239,7 +239,6 @@ def compute_reach_fast(data):
 	num_var = len(vf) + 1
 
 	deg_rho = deg_max + 1 - degree(vf)
-
 	deg_sigma = deg_max - degree(domain)
 	deg_sigma = deg_sigma - (deg_sigma % 2)		# make it even
 
@@ -263,9 +262,9 @@ def compute_reach_fast(data):
 			     (count_monomials_leq(num_var, halfdeg_sigma) + 1)/2
 
 
-	########################################################
-	### Extract matrices defining linear transformations ###
-	########################################################
+	##########################################################
+	### Construct matrices defining linear transformations ###
+	##########################################################
 
 	# Linear trans b -> coef(b)
 	b_b = PolyLinTrans(num_var)
@@ -285,6 +284,10 @@ def compute_reach_fast(data):
 		nrow, ncol, idxi, idxj, vals = sidi_si[i].to_sparse_matrix()
 		A_sidi_si.append( cvx.spmatrix( vals, idxi, idxj, (n_max_mon, ncol) ) )
 
+	# Get identity transformation w.r.t vector representing symmetric matrix
+	nrow, ncol, idxi, idxj, vals = PolyLinTrans.eye(num_var, deg_max).to_sparse_matrix()
+	A_poly_K = cvx.spmatrix(vals, idxi, idxj, (n_max_mon, ncol))
+
 	# Transformation rho -> rho0
 	rho0_rho = PolyLinTrans.elvar(num_var, deg_rho, 0, 0)
 	nrow, ncol, idxi, idxj, vals = rho0_rho.to_sparse()
@@ -301,31 +304,35 @@ def compute_reach_fast(data):
 	#   sigma_i^+ sdd 							(6)
 	#   sigma_i^- sdd 							(7)
 
-	# Optimization vector is
-	#   [ rho_coef  b  sigma^+  sigma^-  K^+  K^-  extra ],
-	# where 'extra' are sdsos variables
-	#
-	# dimensions are [ n_rho  1  len(domain) * n_sigma_sq  len(domain) * n_sigma_sq  n_max_sq  n_max_sq ]
-	#
-
 	# Define optimization problem
 	prob = picos.Problem()
 
 	# Add variables
 	rho = prob.add_variable( 'rho', n_rho )
 	b = prob.add_variable( 'b', 1 )
+	K_pos = prob.add_variable( 'K_pos', n_max_sq)
+	K_neg = prob.add_variable( 'K_neg', n_max_sq)
 	sig_pos_i = [ prob.add_variable( 'sig_pos[%d]' %i, n_sigma_sq ) for i in range(len(domain)) ]
 	sig_neg_i = [ prob.add_variable( 'sig_neg[%d]' %i, n_sigma_sq ) for i in range(len(domain)) ]
 
 	# Add init constraint
 	prob.add_constraint( A_rho0_rho*rho == beq )
 
-	# Add sdd constraints
-	sdd_pos = setup_sdd_picos( prob,  A_Lfrho_rho * rho + A_b_b * b 
-				- picos.sum([A_sidi_si[i] * sig_pos_i[i] for i in range(len(domain))], 'i', '[' + str(len(domain)) + ']'), 'sdd_pos')
-	sdd_neg = setup_sdd_picos( prob, -A_Lfrho_rho * rho + A_b_b * b 
-				- picos.sum([A_sidi_si[i] * sig_neg_i[i] for i in range(len(domain))], 'i', '[' + str(len(domain)) + ']'), 'sdd_neg')
+	# Add eq constraints
+	prob.add_constraint(  A_Lfrho_rho * rho + A_b_b * b 
+					- picos.sum([A_sidi_si[i] * sig_pos_i[i] for i in range(len(domain))], 'i', '[' + str(len(domain)) + ']') 
+					== A_poly_K * K_pos
+				)
+	prob.add_constraint( -A_Lfrho_rho * rho + A_b_b * b 
+					- picos.sum([A_sidi_si[i] * sig_neg_i[i] for i in range(len(domain))], 'i', '[' + str(len(domain)) + ']') 
+					== A_poly_K * K_neg
+				)
 
+	# Make Ks sdd
+	sdd_pos = setup_sdd_picos( prob, K_pos, 'K_pos')
+	sdd_neg = setup_sdd_picos( prob, K_neg, 'K_neg')
+
+	# Make sigmas sdd
 	for i in range(len(domain)):
 		setup_sdd_picos( prob, sig_pos_i[i], 'sig_pos_' + str(i))
 		setup_sdd_picos( prob, sig_neg_i[i], 'sig_neg_' + str(i))
@@ -333,8 +340,178 @@ def compute_reach_fast(data):
 	# Minimize b
 	prob.set_objective('min', b)
 
-	print prob
-
-	prob.solve(solver='mosek', verbose=True)
+	prob.solve(solver='cvxopt', verbose=True)
 
 	return (coef_to_poly(np.array(rho.value), num_var)[0], np.array(b.value)[0][0])
+
+def _coo_zeros(nrow,ncol):
+	'''
+	Create a scipy.sparse zero matrix with 'nrow' rows and 'ncol' columns
+	'''
+	return scipy.sparse.coo_matrix( (nrow,ncol) )
+
+def compute_reach_fast(data):
+	deg_max = data['maxdeg_rho']
+	rho_0 = poly_to_tuple(data['rho_0'], data['variables'])
+	vf = poly_to_tuple(data['vector_field'], data['variables'])
+	domain = poly_to_tuple(data['domain'], data['variables'])
+	r = data['r']
+	tol = data['tol']
+
+	assert(deg_max % 2 == 0)
+
+	#  Want to make 
+	#    b - L rho - d_i s_i^- 
+	#    b + L rho - d_i s_i^+
+	#  sdsos
+
+	num_var = len(vf) + 1
+
+	deg_rho = deg_max + 1 - degree(vf)
+	deg_sigma = deg_max - degree(domain)
+	deg_sigma = deg_sigma - (deg_sigma % 2)		# make it even
+
+	# half degrees for symmetric matrix variables
+	halfdeg_max = deg_max/2
+	halfdeg_sigma = deg_sigma/2	
+
+	print "Using degrees:"
+	print "Maximal degree", deg_max
+	print "deg(rho) = ", deg_rho
+	print "deg(sigma) = ", deg_sigma
+
+	# Compute number of variables  
+	# Overall equation, monomial representation
+	n_max_mon = count_monomials_leq(num_var, deg_max)
+	# Overall equation, square representation
+	n_max_sq = count_monomials_leq(num_var, halfdeg_max) * \
+				(count_monomials_leq(num_var, halfdeg_max) + 1)/2  
+	
+	# rho(t,x), monomial repr.
+	n_rho = count_monomials_leq(num_var, deg_rho) 		   
+
+	# sigma, square repr.
+	n_sigma_sq = count_monomials_leq(num_var, halfdeg_sigma) * \
+			     (count_monomials_leq(num_var, halfdeg_sigma) + 1)/2
+
+	# vars required for sdd repr. of overall eq, sigma
+	n_max_sddvar = 3 * count_monomials_leq(num_var, halfdeg_max) * \
+				(count_monomials_leq(num_var, halfdeg_max) - 1)/2
+	n_sigma_sddvar = 3 * count_monomials_leq(num_var, halfdeg_sigma) * \
+			     (count_monomials_leq(num_var, halfdeg_sigma) - 1)/2
+
+	##########################################################
+	### Construct matrices defining linear transformations ###
+	##########################################################
+
+	# Linear trans b -> coef(b)
+	b_b = PolyLinTrans(num_var)
+	b_b[(0,)*num_var][(0,)*num_var] = 1.
+	nrow, ncol, idxi, idxj, vals = b_b.to_sparse()
+	A_b_b =  scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_max_mon, ncol) )
+
+	# Linear trans coef(rho) -> coef(Lrho)
+	Lrho_rho = Lf(deg_rho, vf)
+	nrow, ncol, idxi, idxj, vals = Lrho_rho.to_sparse()
+	A_Lfrho_rho =  scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_max_mon, ncol) )
+
+	# Linear trans coef(s_i) -> coef(s_i d_i)
+	sidi_si = [PolyLinTrans.mul_pol(num_var, deg_sigma, dom) for dom in domain]
+	A_sidi_si = []
+	for i in range(len(domain)):
+		nrow, ncol, idxi, idxj, vals = sidi_si[i].to_sparse_matrix()
+		A_sidi_si.append( scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_max_mon, ncol) ) )
+	A_sd_s_stacked = scipy.sparse.bmat([ A_sidi_si ])
+
+	# Get identity transformation w.r.t vector representing symmetric matrix
+	nrow, ncol, idxi, idxj, vals = PolyLinTrans.eye(num_var, deg_max).to_sparse_matrix()
+	A_poly_K = scipy.sparse.coo_matrix((vals, (idxi, idxj)), shape = (n_max_mon, ncol))
+
+	# Transformation rho -> rho0
+	rho0_rho = PolyLinTrans.elvar(num_var, deg_rho, 0, 0)
+	nrow, ncol, idxi, idxj, vals = rho0_rho.to_sparse()
+	A_rho0_rho = scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (nrow, ncol) )
+	
+	beq = np.zeros(A_rho0_rho.shape[0])
+	for arg in rho_0:
+		beq[multiindex_to_index(arg[0])] = arg[1]
+
+	# Constraints
+	#    rho(0,x) = rho0(x) 					(1)
+	#    Lf rho + b - sigma_i^+ d_i = K^+		(2)
+	#   -Lf rho + b - sigma_i^- d_i = K^-		(3)
+	#   sigma_i^+ sdd 							(6)
+	#   sigma_i^- sdd 							(7)
+
+	# Variable vector
+	# 
+	#  [ rho  b  s_1^+ ... s_D^+  s_1^- ... s_D^-  K^+ K^- ]
+	#
+	#  with dimensions
+	#
+	#   [ n_rho 1  n_sigma_sq ... n_sigma_sq n_sigma_sq ... n_sigma_sq n_max_sq n_max_sq ]
+
+	numvar = n_rho + 1 + 2 * len(domain) * n_sigma_sq + 2 * n_max_sq
+
+	# Constraints
+	# 
+	#   A_rho0_rho * rho = beq  						
+	# 	A_Lfrho_rho * rho + b - sigma_i^+ d_i - A_poly_K * K^+ = 0
+	#  -A_Lfrho_rho * rho + b - sigma_i^- d_i - A_poly_K * K^- = 0
+	# 	
+	#  K^+ sdd
+	#  K^- sdd
+	#  sigma_i^+ sdd
+	#  sigma_i^- sdd
+
+	n_con_init = A_rho0_rho.shape[0]
+	n_con_K = n_max_mon
+	numcon = n_con_init + 2 * n_con_K
+
+	Aeq = scipy.sparse.bmat([
+		[ scipy.sparse.bmat( [[ A_rho0_rho, _coo_zeros(n_con_init, numvar - n_rho) ]] ) ],
+		[ scipy.sparse.bmat( [[  A_Lfrho_rho, A_b_b, -A_sd_s_stacked, _coo_zeros(n_con_K, len(domain) * n_sigma_sq ), -A_poly_K, _coo_zeros(n_con_K, n_max_sq) ]] ) ],
+		[ scipy.sparse.bmat( [[ -A_Lfrho_rho, A_b_b, _coo_zeros(n_con_K, len(domain) * n_sigma_sq ), -A_sd_s_stacked, _coo_zeros(n_con_K, n_max_sq), -A_poly_K ]] ) ]
+	])
+	beq = np.hstack([beq, np.zeros(2 * n_con_K)])
+
+	# Set up mosek environment
+	env = mosek.Env() 
+	task = env.Task(0,0)
+
+	task.appendvars(numvar) 
+	task.appendcons(numcon)
+
+	# Make all vars unbounded
+	task.putvarboundslice(0, numvar, [mosek.boundkey.fr] * numvar, [0.]*numvar, [0.]*numvar )
+
+	# Add objective function
+	task.putcj(n_rho, 1.)
+	task.putobjsense(mosek.objsense.minimize) 
+
+	# Add constraints
+	Aeq = Aeq.tocoo()
+	task.putaijlist( Aeq.row, Aeq.col, Aeq.data )
+	task.putconboundslice(0, numcon, [mosek.boundkey.fx] * numcon, beq, beq )
+
+	for j in range(len(domain)):
+		start = n_rho + 1 + j * n_sigma_sq
+		length = n_sigma_sq
+		setup_sdd_mosek( task, start, length )								# make sigma_i^+ sdd
+		setup_sdd_mosek( task, start + len(domain) * n_sigma_sq, length) 	# make sigma_i^- sdd
+
+	start = n_rho + 1 + 2 * len(domain) * n_sigma_sq
+	length = n_max_sq
+	setup_sdd_mosek( task, start, length )			# make K^+ sdd
+	setup_sdd_mosek( task, start+length, length) 	# make K^- sdd
+	
+	numvar_sdd = 2 * len(domain) * n_sigma_sddvar + 2 * n_max_sddvar
+
+	task.optimize() 
+
+	opt_rho = np.zeros(n_rho)
+	opt_err = np.zeros(1)
+	task.getxxslice( mosek.soltype.itr, 0, n_rho, opt_rho )
+	task.getxxslice( mosek.soltype.itr, n_rho, n_rho+1, opt_err )
+
+	return ( coef_to_poly(opt_rho, num_var), opt_err[0])

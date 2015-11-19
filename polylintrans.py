@@ -312,9 +312,9 @@ class PolyLinTrans(object):
 		""" Return a representation A of the transformation from a vector
 			representing a symmetric matrix.
 
-			That is, if p is a symmetric matrix vector, 
+			That is, if p = vec(S) is a symmetric matrix vector, 
 				A p 
-			is a grlex coefficient vector of the transformed polynomial.
+			is a grlex coefficient vector of the transformed polynomial Trans( x^T S x ).
 		"""
 		half_deg = int(ceil(float(self.d0)/2))
 		num_mon = count_monomials_leq(self.n, half_deg)

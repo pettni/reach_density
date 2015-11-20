@@ -1,3 +1,16 @@
+'''
+Module for solving the density problem
+
+ min  || Lf rho (t,x) ||  over  D,
+
+where Lf is the differential operator 
+	Lf : rho |--> d_t rho +  d_{x_i} rho f_i(t,x),
+for a vector field f.
+
+The optimization is done over polynomial up to a 
+given degree.
+'''
+
 import numpy as np
 import sympy as sp
 import scipy.sparse 
@@ -9,7 +22,7 @@ import mosek
 
 from polylintrans import *
 
-from sdd import setup_sdd_picos, add_sdd_mosek
+from sdd import add_sdd_picos, add_sdd_mosek
 
 def poly_to_tuple(poly, variables):
 	"""
@@ -26,8 +39,9 @@ def coef_to_poly(coef, num_var):
 		Transform a (grlex ordered) list of coefficients to a polynomial
 	"""
 	ret = 0
+	mon_iterator = grlex_iter( (0,) * num_var )
 	for k in range(len(coef)):
-		midx = index_to_grlex(k, num_var)
+		midx = next(mon_iterator)
 		mon = coef[k]*sp.Symbol('t')**midx[0]
 		for i in range(1,num_var):
 			mon *= sp.Symbol('x%d' % i)**midx[i]
@@ -58,7 +72,7 @@ def Lf(d, vf):
 		L +=  vf_mul * dxi[i]
 	return L
 
-def compute_reach_basic(data):
+def _compute_reach_basic(data):
 	deg_max = data['maxdeg_rho']
 	rho_0 = poly_to_tuple(data['rho_0'], data['variables'])
 	vf = poly_to_tuple(data['vector_field'], data['variables'])
@@ -146,7 +160,11 @@ def compute_reach_basic(data):
 		   A_rho0_rho, b_rho0
 
 def compute_reach_picos(data, solver = 'gurobi'):
-
+	'''
+	Solve the density problem using the parser 
+	picos (http://picos.zib.de), which introduces overhead
+	but supports many solvers. 
+	'''
 	try:
 		import picos
 		import cvxopt as cvx
@@ -155,7 +173,7 @@ def compute_reach_picos(data, solver = 'gurobi'):
 
 	num_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
 		   A_Lfrho_rho, A_b_b, A_sidi_si, A_poly_K, \
-		   A_rho0_rho, b_rho0 = compute_reach_basic(data)
+		   A_rho0_rho, b_rho0 = _compute_reach_basic(data)
 
 	# make cvx spmatrices
 	A_Lfrho_rho = cvx.spmatrix( A_Lfrho_rho.data, A_Lfrho_rho.row, A_Lfrho_rho.col, size = A_Lfrho_rho.shape )
@@ -200,13 +218,13 @@ def compute_reach_picos(data, solver = 'gurobi'):
 				)
 
 	# Make Ks sdd
-	sdd_pos = setup_sdd_picos( prob, K_pos, 'K_pos')
-	sdd_neg = setup_sdd_picos( prob, K_neg, 'K_neg')
+	sdd_pos = add_sdd_picos( prob, K_pos, 'K_pos')
+	sdd_neg = add_sdd_picos( prob, K_neg, 'K_neg')
 
 	# Make sigmas sdd
 	for i in range(len(A_sidi_si)):
-		setup_sdd_picos( prob, sig_pos_i[i], 'sig_pos_' + str(i))
-		setup_sdd_picos( prob, sig_neg_i[i], 'sig_neg_' + str(i))
+		add_sdd_picos( prob, sig_pos_i[i], 'sig_pos_' + str(i))
+		add_sdd_picos( prob, sig_neg_i[i], 'sig_neg_' + str(i))
 
 	# Minimize b
 	prob.set_objective('min', b)
@@ -229,6 +247,10 @@ def _coo_zeros(nrow,ncol):
 	return scipy.sparse.coo_matrix( (nrow,ncol) )
 
 def compute_reach_mosek(data):
+	'''
+	Solve the density problem using mosek
+	(https://www.mosek.com).
+	'''
 
 	try:
 		import mosek
@@ -237,7 +259,7 @@ def compute_reach_mosek(data):
 	
 	num_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
 		   A_Lfrho_rho, A_b_b, A_sidi_si, A_poly_K, \
-		   A_rho0_rho, b_rho0 = compute_reach_basic(data)
+		   A_rho0_rho, b_rho0 = _compute_reach_basic(data)
 
 	A_sd_s_stacked = scipy.sparse.bmat([ A_sidi_si ])
 

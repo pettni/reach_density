@@ -9,7 +9,7 @@ from scipy.integrate import odeint
 
 import sys
 sys.path.append('../')
-from density_sdsos import compute_reach_fast
+from density_sdsos import compute_reach_mosek
 
 # Initialize symbolic variables
 t, x1 = sp.symbols('t,x1')
@@ -30,7 +30,7 @@ for (i, maxdeg) in enumerate(range(min_deg,max_deg,step)):
 	data['maxdeg_rho'] = maxdeg
 
 	t0 = time()
-	(sol, error) = compute_reach_fast(data)
+	(sol, error) = compute_reach_mosek(data)
 	t1 = time()
 
 	print "Solved in ", t1-t0, ", error is ", error

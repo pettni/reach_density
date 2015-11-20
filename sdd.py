@@ -52,7 +52,7 @@ def _sdd_index(i,j,n):
 	else:
 		return [[_ij_to_k(min(i,j), max(i,j)-1, num_vars),2]]
 
-def setup_sdd_picos(prob, var, sdd_str = ''):
+def add_sdd_picos(prob, var, sdd_str = ''):
 	""" Make sure that the expression matVar is sdd by adding constraints to the model M.
 		Additional variables Mij of size n*(n-1)/2 x 3 are required, where  each row represents a symmetric
 		2x2 matrix

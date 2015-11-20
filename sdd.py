@@ -13,8 +13,8 @@ from mosek.fusion import *
 def _k_to_ij(k, L):
 	""" 
 	Given a symmetric matrix Q represented by a vector
-		V = [Q_00, ... Q_0n, Q_11, ..., Q_1n] of length L,
-		for given k, compute i,j s.t. Q_ij = V(k)
+		V = [Q_00, ... Q_0n, Q_11, ..., Q_1n, Q22, ..., ] of length L,
+		for given k, compute i,j s.t. Q_ij = V[k]
 	"""
 
 	if (k >= L):
@@ -51,40 +51,6 @@ def _sdd_index(i,j,n):
 		return [ [_ij_to_k(min(i,l), max(i,l)-1, num_vars),(0 if i<l else 1)] for l in range(n) if l != i ]
 	else:
 		return [[_ij_to_k(min(i,j), max(i,j)-1, num_vars),2]]
-
-def setup_sdd(M, matVar):
-	""" Make sure that the expression matVar is sdd by adding constraints to the model M.
-		Additional variables Mij of size n*(n-1)/2 x 3 are required, where  each row represents a symmetric
-		2x2 matrix
-	    Mij(k,:) is the vector Mii Mjj Mij representing [Mii Mij; Mij Mjj] for (i,j) = _k_to_ij(k)"""
-
-	num_vars = int(matVar.size())
-	if num_vars == 1:
-		# scalar case
-		M.constraint(matVar, Domain.greaterThan(0.))
-		return None
-
-	n = int((np.sqrt(1+8*num_vars) - 1)/2)
-
-	num_Mij = n*(n-1)/2
-
-	Mij = M.variable(Set.make(num_Mij, 3), Domain.unbounded())
-
-	# add pos and cone constraints ensuring that each Mij(k,:) is psd
-	for k in range(num_Mij):
-		M.constraint(Mij.index(k,0), Domain.greaterThan(0.))
-		M.constraint(Mij.index(k,1), Domain.greaterThan(0.))
-		# (x,y,z) in RotatedQCone <--> xy/2 >= z**2
-		Mij_expr = Expr.vstack(Expr.mul(0.5, Mij.index(k,0)), Mij.pick([[k,j] for j in range(1,3)]))
-		M.constraint(Mij_expr, Domain.inRotatedQCone(3))
-	
-	# set Aij = Mij for i != j
-	for i in range(n):
-		for j in range(i,n):
-			A_idx = _ij_to_k(i,j,num_vars)
-			M_idx = _sdd_index(i,j,n)
-			M.constraint(Expr.sub(matVar.index(A_idx), Expr.sum(Mij.pick(M_idx) ) ), Domain.equalsTo(0.0) )
-	return Mij
 
 def setup_sdd_picos(prob, var, sdd_str = ''):
 	""" Make sure that the expression matVar is sdd by adding constraints to the model M.
@@ -146,6 +112,7 @@ def add_sdd_mosek(task, start, length):
 	# 
 	#   [ old_constr   0  ]  [ old_vars ]    [old_rhs ]
 	#   [  0   -I  0    D ]  [ new_vars ]  = [  0     ]
+	#
 	# where I as at pos start:start+length
 
 	# we need 3 x this many new variables
@@ -157,6 +124,8 @@ def add_sdd_mosek(task, start, length):
 				[mosek.boundkey.fr] * 3 * numvar_new, 
 				[0.] * 3 * numvar_new, 
 				[0.] * 3 * numvar_new  )
+	
+	# add new constraints
 	task.appendcons(length)
 
 	# put negative identity matrix
@@ -176,8 +145,8 @@ def add_sdd_mosek(task, start, length):
 
 	task.putaijlist( D_row_idx, D_col_idx, D_vals ) # add it
 
-	# put = 0 constraints
-	task.putconboundslice( numcon, numcon + length, [mosek.boundkey.fx] * length, [0.]*length, [0.]*length )
+	# put = 0 for new constraints
+	task.putconboundslice( numcon, numcon + length, [mosek.boundkey.fx] * length, [0.] * length, [0.] * length )
 
 	# add cone constraints
 	task.appendconesseq( [mosek.conetype.rquad] * numvar_new, [0.0] * numvar_new, [3] * numvar_new, numvar )

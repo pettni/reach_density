@@ -4,10 +4,11 @@
 	to (slow) symbolic computations.
 """
 
-from math import ceil
+from math import ceil, sqrt
 
 from itertools import chain
 from scipy.misc import comb
+import scipy.sparse
 
 from sdd import _k_to_ij
 
@@ -16,13 +17,124 @@ def eval_Lintrans(num_var, trans, vec):
 	    transformed vector """
 	res = [0.]* count_monomials_leq(num_var, trans.d1)
 	for i in range(len(vec)):
-		midx = index_to_multiindex(i, num_var)
+		midx = index_to_grlex(i, num_var)
 		for midx2, v in trans[midx].coeffs.iteritems():
-			j = multiindex_to_index(midx2)
+			j = grlex_to_index(midx2)
 			res[j] += v * vec[i]
 	return res
 
-def multiindex_to_index(multiindex):
+def grlex_comp(midx1, midx2):
+	return cmp(sum(midx1), sum(midx2)) or cmp(midx1, midx2)
+
+def grlex_iter(midx):
+	'''
+	Create an iterator that produces ordered grlex exponents, starting
+	with the multiindex 'midx'.
+
+	Example: The iterator grlex_iter( (0,2) ) produces the sequence
+		(0,2) (1,2) (2,0) (0,3) (1,2) (2,1) (3,0) ...
+	'''
+
+	midx = list(midx)
+
+	assert(min(midx) >= 0)
+
+	if max(midx) == 0:
+		right_ptr = 0
+	else:
+		# find right-most non-zero element
+		for i in range(len(midx)-1, -1, -1):
+			if midx[i] != 0:
+				right_ptr = i
+				break
+
+	while True:
+		yield tuple(midx)
+		if right_ptr == 0:
+			midx = [0] * (len(midx) - 1) + [sum(midx) + 1]
+			right_ptr = len(midx) - 1
+		else:
+			at_right_ptr = midx[right_ptr]
+			midx[right_ptr] = 0
+			midx[right_ptr-1] += 1
+			midx[-1] = at_right_ptr - 1
+			right_ptr = len(midx) - 1 if at_right_ptr != 1 else right_ptr - 1
+
+def vec_to_grlex(L, dim):
+	''' 
+	Given vec(A) for a symmetric matrix A, such that len(vec(A)) = L,
+	compute the mapping  vec(A) |--> x^T A x 
+	to the grlex dim-dimensionsl monomial basis on multiindex - coefficient form.
+
+	Example: [ a b c ] represents the matrix [ a b ; b c], and the corresponding 1d
+	polynomial is a + 2b x + c x^2. Thus the mapping can be represented as
+	( 1., 2., 1. ), [ (0.), (1.), (2.) ]
+	'''
+	n = (sqrt(1 + 8 * L) - 1)/2  # side of matrix
+
+	if not ceil(n) == n:
+		raise TypeError('wrong size for vec(A) for A symmetric')
+
+	j = 0
+	i = 0
+	i_moniter = grlex_iter( (0,) * dim )
+	j_moniter = grlex_iter( (0,) * dim )
+	i_mon = next(i_moniter)
+	j_mon = next(j_moniter)
+
+	exp = []
+	coef = [] 
+
+	for k in range(L):
+		# loop over all elements
+		exp += [tuple( [ii+jj for ii,jj in zip(i_mon, j_mon) ] )]
+		coef += [1. if i == j else 2.]
+
+		if j == n-1:
+			i += 1
+			j = i
+			i_mon = next(i_moniter)
+			j_moniter = grlex_iter( i_mon )
+			j_mon = next(j_moniter)
+	
+		else:
+			j_mon = next(j_moniter)
+			j += 1
+	return coef, exp
+
+def vec_to_sparse_matrix(L, dim):
+	'''
+	Sparse matrix representation of the mapping
+		vec(A) |--> c,
+	such that x_1^T A x_1 = c^T x_2,
+	using grlex ordering both for both x_1 and x_2
+	'''
+
+	# Obtain coef - exp representation of mapping
+	coef, exp = vec_to_grlex(L, dim)
+
+	# sort coef and row indices simultaneously w.r.t grlex ordering
+	sorted_ks = zip(coef, range(L))
+	sorted_ks.sort(cmp = lambda a1, a2: grlex_comp(exp[a1[1]],exp[a2[1]]) )
+
+	# go through to add cols
+	mon_iter = grlex_iter( (0,) * dim )
+
+	cols = [  ]
+	current_mon = next(mon_iter)
+	current_idx = 0
+	for vi,ki in sorted_ks:
+		while current_mon != exp[ki]:
+			current_mon = next(mon_iter)
+			current_idx += 1
+		cols += [current_idx]
+
+	# unwrap coef, row
+	coef, row = zip(*sorted_ks)
+
+	return scipy.sparse.coo_matrix( (coef, (cols, row) ) )
+
+def grlex_to_index(multiindex):
 	"""Returns the grlex ordering number for a given multi-index. Can be expensive for large degrees"""
 	total_degree = sum(multiindex)
 	n = len(multiindex)
@@ -35,11 +147,11 @@ def multiindex_to_index(multiindex):
 		remaining_degree -= multiindex[i]
 	return index
 
-def index_to_multiindex(index, n):
+def index_to_grlex(index, n):
 	"""Returns the multi-index of length n for a given grlex ordering number"""
-	multiindex = [0 for i in range(n)]
+	grlex = [0 for i in range(n)]
 
-	# find sum of multiindex
+	# find sum of grlex
 	total_degree = 0
 	while count_monomials_leq(n, total_degree) <= index:
 		total_degree += 1
@@ -53,14 +165,14 @@ def index_to_multiindex(index, n):
 		for k in range(total_degree+1):
 			new_rel_idx = rel_idx + _count_monomials_eq(n-(i+1), rem_deg-k)
 			if new_rel_idx > rel_idx_search:
-				multiindex[i] = k
+				grlex[i] = k
 				rem_deg -= k
 				break
 			rel_idx = new_rel_idx
 
-	multiindex[-1] = rem_deg
+	grlex[-1] = rem_deg
 
-	return tuple(multiindex)
+	return tuple(grlex)
 
 def count_monomials_leq(n, d):
 	'''Number of monomials in n variables of degree less than or equal to d'''
@@ -302,9 +414,10 @@ class PolyLinTrans(object):
 		nrow = count_monomials_leq(self.n, self.d1)
 		ncol = count_monomials_leq(self.n, self.d0)
 		for key1, col in self.cols.iteritems():
+			midx1 = grlex_to_index(key1)
 			for key2, val in col.coeffs.iteritems():
-				i.append(multiindex_to_index(key2))
-				j.append(multiindex_to_index(key1))
+				i.append(grlex_to_index(key2))
+				j.append(midx1)
 				v.append(val)
 		return nrow, ncol, i, j, v
 
@@ -319,18 +432,19 @@ class PolyLinTrans(object):
 		half_deg = int(ceil(float(self.d0)/2))
 		num_mon = count_monomials_leq(self.n, half_deg)
 		len_vec = num_mon*(num_mon+1)/2
+
+		coefs, exps = vec_to_grlex(len_vec, self.n)
+		
 		i = []
 		j = []
 		v = []
-		for k in range(len_vec):
-			mat_i, mat_j = _k_to_ij(k, len_vec)  # 
-			midx_i = index_to_multiindex(mat_i, self.n)  #
-			midx_j = index_to_multiindex(mat_j, self.n)  #
-			new_idx = tuple([midx_i[it] + midx_j[it] for it in range(self.n)])
-			for key2, val in self[new_idx].coeffs.iteritems():
-				i.append(multiindex_to_index(key2))
-				j.append(k)
-				v.append(2*val if mat_i != mat_j else val)
+
+		for k, (coef,midx_mid) in enumerate(zip(coefs, exps)):
+			for midx_f, val in self[midx_mid].coeffs.iteritems():
+				i.append( grlex_to_index(midx_f) )
+				j.append( k )
+				v.append( val * coef )
+
 		nrow = count_monomials_leq(self.n, self.d1)
 		ncol = len_vec
 		return nrow, ncol, i, j, v

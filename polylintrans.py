@@ -228,7 +228,9 @@ class PolyLinTrans(object):
 		return count_monomials_leq(self.n, self.d0)
 
 	def eye(n, d):
-		""" Create identity matrix """
+		'''
+		Identity transformation
+		'''
 		p = PolyLinTrans(n)
 		p.d0 = d
 		for idx in _iter_idx((), n, d):
@@ -238,7 +240,9 @@ class PolyLinTrans(object):
 	eye = staticmethod(eye)
 
 	def diff(n, d, xi):
-		""" Create derivative matrix w.r.t variable xi """
+		'''
+		Differentiation transformation w.r.t variable xi
+		'''
 		p = PolyLinTrans(n)
 		p.d0 = d
 		for idx in _iter_idx((), n, d):
@@ -251,7 +255,9 @@ class PolyLinTrans(object):
 	diff = staticmethod(diff)
 
 	def int(n, d, xi):
-		""" Create integration matrix w.r.t variable xi """
+		'''
+		Integration transformation w.r.t variable xi
+		'''
 		p = PolyLinTrans(n)
 		p.d0 = d
 		p.d1 = d+1
@@ -262,22 +268,24 @@ class PolyLinTrans(object):
 		return p
 	int = staticmethod(int)
 
-	def elvar(n, d, var, val):
-		# Linear transformation corresponding to eliminating one or more of the variables
-		# by setting them to val
+	def elvar(n, d, xi, val):
+		'''
+		Transformation resulting from setting xi = val (new polynomial has less variables)
+		'''
 		p = PolyLinTrans(n)
 		for idx in _iter_idx((), n, d):
 			new_idx = list(idx)
-			new_idx[var] = 0
-			p[idx][tuple(new_idx)] += val**idx[var]
+			new_idx[xi] = 0
+			p[idx][tuple(new_idx)] += val**idx[xi]
 		p.updated()
 		return p
 	elvar = staticmethod(elvar)
 
-	def mul_pol(n, d, pol):
-		# Matrix representing multiplication of a degree d polynomial with a
-		# polynomial p(x) represented as ( ( midx1, cf1 ), (midx2, cf2), ... )
-		# Multiplication with matrix should be from the left!
+	def mul_pol(n, d, poly):
+		'''
+		Transformation representing multiplication of a degree d polynomial with a
+		polynomial poly represented as ( ( midx1, cf1 ), (midx2, cf2), ... )
+		'''
 		p = PolyLinTrans(n)
 		maxdeg = 0
 		for midx, cf in pol:
@@ -291,7 +299,14 @@ class PolyLinTrans(object):
 	mul_pol = staticmethod(mul_pol)
 
 	def integrate(n, d, dims, box):
-		# integrate a polynomial over the variables dims in a hyperbox
+		'''
+		Transformation representing integration over variables in 'dims'
+		over a hyperbox 'box'
+
+		Ex: The mapping p(x,y,z) |--> q(x,z) = \int_0^1 p(x,y,z) dy 
+			is obtained by mon(q) = A_int * mon(p) for 
+			>> A_int = integrate(3,2,[1],[[0,1]])
+		'''
 		p = PolyLinTrans.eye(n,d)  # start with right-hand identity
 		for (i, xi) in enumerate(dims):
 			int_trans = PolyLinTrans.int(n,d,xi)

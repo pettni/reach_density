@@ -340,7 +340,7 @@ def compute_reach_mosek(data):
 	
 	print "completed in " + str(time.clock() - t_start) + "\n"
 
-	print "optimizing..."
+	print "converting & optimizing..."
 	t_start = time.clock()
 
 	task.optimize() 

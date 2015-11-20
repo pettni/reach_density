@@ -13,7 +13,9 @@ from plot_2d import *
 t, x1, x2 = sp.symbols('t,x1,x2')
 
 tmax = 1
-data = {'variables': [t, x1, x2],   	# t must be first
+data = {'t_var': [t],
+		'x_vars': [x1, x2],
+		'd_vars': [],
 		'maxdeg_rho' : 8, 
 		'rho_0': 0.5 - x1**2 - x2**2,
 		'vector_field': [t*x2, -x1], 

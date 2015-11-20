@@ -14,8 +14,16 @@ from density_sdsos import compute_reach_mosek
 # Initialize symbolic variables
 t, x1 = sp.symbols('t,x1')
 
-data = {'variables': [t, x1], 'maxdeg' : 6, 'vector_field': [-x1*t], 'rho_0': 1-x1**2, 'domain': [(x1+1.5) * (1.5-x1), t * ( 1 - t)], 
-		'r': 1, 'tol': 1e-5}
+data = {'t_var': [t], 
+		'x_vars' : [x1],
+		'd_vars' : [],
+		'maxdeg' : 6, 
+		'vector_field': [-x1*t], 
+		'rho_0': 1-x1**2, 
+		'domain': [(x1+1.5) * (1.5-x1), t * ( 1 - t)], 
+		'r': 1, 
+		'tol': 1e-5
+	    }
 
 plt.figure()
 

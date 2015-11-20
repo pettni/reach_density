@@ -34,17 +34,17 @@ def poly_to_tuple(poly, variables):
 	terms = sp.Poly(poly_ex, variables).terms()
 	return tuple([(t0, float(t1)) for t0,t1 in terms])
 
-def coef_to_poly(coef, num_var):
+def coef_to_poly(coef, variables):
 	"""
 		Transform a (grlex ordered) list of coefficients to a polynomial
 	"""
 	ret = 0
-	mon_iterator = grlex_iter( (0,) * num_var )
+	mon_iterator = grlex_iter( (0,) * len(variables) )
 	for k in range(len(coef)):
 		midx = next(mon_iterator)
-		mon = coef[k]*sp.Symbol('t')**midx[0]
-		for i in range(1,num_var):
-			mon *= sp.Symbol('x%d' % i)**midx[i]
+		mon = coef[k]*variables[0]**midx[0]
+		for i in range(1,len(variables)):
+			mon *= variables[i]**midx[i]
 		ret += mon
 	return ret
 
@@ -74,7 +74,7 @@ def Lf(d, vf):
 
 def _compute_reach_basic(data):
 	deg_max = data['maxdeg_rho']
-	rho_0 = poly_to_tuple(data['rho_0'], data['variables'])
+	rho_0 = poly_to_tuple(data['rho_0'], data['t_var'])
 	vf = poly_to_tuple(data['vector_field'], data['variables'])
 	domain = poly_to_tuple(data['domain'], data['variables'])
 	r = data['r']
@@ -238,7 +238,7 @@ def compute_reach_picos(data, solver = 'gurobi'):
 
 	print "completed in " + str(time.clock() - t_start) + "\n"
 
-	return (coef_to_poly(np.array(rho.value), num_var)[0], np.array(b.value)[0][0])
+	return (coef_to_poly(np.array(rho.value), data['variables'])[0], np.array(b.value)[0][0])
 
 def _coo_zeros(nrow,ncol):
 	'''
@@ -353,4 +353,4 @@ def compute_reach_mosek(data):
 	task.getxxslice( mosek.soltype.itr, 0, n_rho, opt_rho )
 	task.getxxslice( mosek.soltype.itr, n_rho, n_rho+1, opt_err )
 
-	return ( coef_to_poly(opt_rho, num_var), opt_err[0])
+	return ( coef_to_poly(opt_rho, data['variables']), opt_err[0])

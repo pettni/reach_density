@@ -288,7 +288,7 @@ class PolyLinTrans(object):
 		'''
 		p = PolyLinTrans(n)
 		maxdeg = 0
-		for midx, cf in pol:
+		for midx, cf in poly:
 			for idx in _iter_idx((), n, d):
 				new_idx = tuple([idx[i] + midx[i] for i in range(n)])
 				p[idx][new_idx] = float(cf)

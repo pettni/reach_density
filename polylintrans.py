@@ -26,7 +26,56 @@ def eval_Lintrans(num_var, trans, vec):
 def grlex_comp(midx1, midx2):
 	return cmp(sum(midx1), sum(midx2)) or cmp(midx1, midx2)
 
-def grlex_iter(midx):
+def multi_grlex_iter(midx, groups, degrees):
+	'''
+	Create an iterator that produces ordered exponents, starting
+	with the multiindex 'midx', such that total degree of the variables
+	in groups[i] does not exceed degrees[i].
+
+	The ordering is based on grlex groupwise, but does not result
+	in an overall grlex ordering.
+
+	Example: The iterator grlex_iter( (0,0), [ [0], [1] ], [2], [1] ) 
+			 produces the sequence
+		(0,0) (1,0) (2,0) (0,1) (1,1) (2,1)
+	'''
+
+	# make sure 'groups' is a valid partition
+	assert(set([dim for group in groups for dim in group]) == set(range(len(midx))))
+	assert(len(groups) == len(degrees))
+
+	# starting multiindices
+	start_midx = [ tuple([ midx[dim] for dim in group ]) for group in groups ]
+
+	iterators = [grlex_iter(m0, deg) for m0, deg in zip(start_midx, degrees) ]
+	mons = [next(iterator) for iterator in iterators]
+
+	ret = list(midx)
+	while True:
+
+		yield tuple(ret)
+
+		for ind in range(len(degrees)):
+			# find first that is not at max
+			try:
+				mons[ind] = next(iterators[ind])
+				break
+			except StopIteration:
+
+				if ind == len(degrees) - 1:
+					raise StopIteration
+				
+				# was at max, reset it
+				iterators[ind] = grlex_iter(start_midx[ind], degrees[ind])
+				mons[ind] = next(iterators[ind])
+
+		# Fill out return tuple
+		for group_nr, group in enumerate(groups):
+			for pos_nr, pos in enumerate(group):
+				ret[pos] = mons[group_nr][pos_nr]
+
+
+def grlex_iter(midx, deg = -2):
 	'''
 	Create an iterator that produces ordered grlex exponents, starting
 	with the multiindex 'midx'.
@@ -49,6 +98,10 @@ def grlex_iter(midx):
 				break
 
 	while True:
+
+		if sum(midx) == deg + 1:
+			raise StopIteration
+
 		yield tuple(midx)
 		if right_ptr == 0:
 			midx = [0] * (len(midx) - 1) + [sum(midx) + 1]

@@ -74,9 +74,10 @@ def Lf(d, vf):
 
 def _compute_reach_basic(data):
 	deg_max = data['maxdeg_rho']
-	rho_0 = poly_to_tuple(data['rho_0'], data['t_var'])
-	vf = poly_to_tuple(data['vector_field'], data['variables'])
-	domain = poly_to_tuple(data['domain'], data['variables'])
+	rho_0 = poly_to_tuple(data['rho_0'], data['x_vars'])
+	vf = poly_to_tuple(data['vector_field'], data['t_var'] + data['x_vars'] + data['d_vars'])
+	domain = poly_to_tuple(data['domain'], data['t_var'] + data['x_vars'])
+	d_set = poly_to_tuple(data['d_set'], data['d_vars'])
 	r = data['r']
 	tol = data['tol']
 
@@ -87,7 +88,9 @@ def _compute_reach_basic(data):
 	#    b + L rho - d_i s_i^+
 	#  sdsos
 
-	num_var = len(vf) + 1
+	num_t_var = 1
+	num_x_var = len(data['x_vars'])
+	num_d_var = len(data['d_vars'])
 
 	deg_rho = deg_max + 1 - degree(vf)
 	deg_sigma = deg_max - degree(domain)
@@ -103,13 +106,13 @@ def _compute_reach_basic(data):
 
 	# Compute number of variables  
 	# Overall equation, monomial representation
-	n_max_mon = count_monomials_leq(num_var, deg_max)
+	n_max_mon = count_monomials_leq(num_t_var + num_x_var + num_d_var, deg_max)
 	# Overall equation, square representation
-	n_max_sq = count_monomials_leq(num_var, halfdeg_max) * \
-				(count_monomials_leq(num_var, halfdeg_max) + 1)/2  
+	n_max_sq = count_monomials_leq(num_t_var + num_x_var + num_d_var, halfdeg_max) * \
+				(count_monomials_leq(num_t_var + num_x_var + num_d_var, halfdeg_max) + 1)/2  
 	
 	# rho(t,x), monomial repr.
-	n_rho = count_monomials_leq(num_var, deg_rho) 		   
+	n_rho = count_monomials_leq(num_t_var + num_x_var, deg_rho) 		   
 
 	# sigma, square repr.
 	n_sigma_sq = count_monomials_leq(num_var, halfdeg_sigma) * \

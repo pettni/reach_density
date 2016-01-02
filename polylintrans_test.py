@@ -3,6 +3,8 @@ import unittest
 import numpy as np
 import sympy as sp
 
+import itertools
+
 from sympy.polys.monomials import itermonomials
 from sympy.polys.orderings import monomial_key
 from sympy.abc import x, y, z
@@ -140,6 +142,45 @@ class PolyLinTransTests(unittest.TestCase):
 			idx2 = next(iterator)
 			self.assertTrue( grlex_comp( idx1, idx2 ) < 0 )
 			idx1 = idx2
+
+	def test_grlex_iter2(self):
+		iterator = grlex_iter( (0,0,0,0), 4 )
+
+		for k in range(count_monomials_leq(4,4)):
+			next(iterator)
+		
+		try:
+			next(iterator)
+		except StopIteration:
+			pass
+		except Exception, e:
+			self.fail('Unexpected exception thrown:')
+		else:
+			self.fail('ExpectedException not thrown')
+
+	def test_grlex_iter_multi(self):
+		m1 = 5
+		m2 = 3
+		m3 = 10
+		iterator = multi_grlex_iter( (0,0,0), [[0], [1], [2]], [m1,m2,m3] )
+
+		comb_iter = itertools.product( range(m1+1), range(m2+1), range(m3+1) )
+
+		for k in range((m1+1) * (m2+1) * (m3+1)):
+			asd =  next(iterator)
+			if k == m1+1:
+				self.assertEquals(asd, (0,1,0))
+
+		self.assertEquals(asd , (m1,m2,m3))
+
+		try:
+			next(iterator)
+		except StopIteration:
+			pass
+		except Exception, e:
+			self.fail('Unexpected exception thrown:')
+		else:
+			self.fail('ExpectedException not thrown')
 
 	def test_vec_to_grlex1(self):
 		coef, exp = vec_to_grlex(10,3)

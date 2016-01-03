@@ -65,10 +65,11 @@ def Lf(d, vf):
 			Lf : p |--> D_t p + D_x p * f(t,x)
 	"""
 	xdim = len(vf)
-	dxi = [PolyLinTrans.diff(xdim+1, d, i) for i in range(xdim+1)]
+	tot_dim = len(vf[0][0][0])
+	dxi = [PolyLinTrans.diff(tot_dim, d, i) for i in range(xdim+1)]
 	L = dxi[0]
 	for i in range(1, xdim+1):
-		vf_mul = PolyLinTrans.mul_pol(xdim+1, dxi[i].d1, vf[i-1])
+		vf_mul = PolyLinTrans.mul_pol(tot_dim, dxi[i].d1, vf[i-1])
 		L +=  vf_mul * dxi[i]
 	return L
 
@@ -76,16 +77,15 @@ def _compute_reach_basic(data):
 	deg_max = data['maxdeg_rho']
 	rho_0 = poly_to_tuple(data['rho_0'], data['x_vars'])
 	vf = poly_to_tuple(data['vector_field'], data['t_var'] + data['x_vars'] + data['d_vars'])
-	domain = poly_to_tuple(data['domain'], data['t_var'] + data['x_vars'])
-	d_set = poly_to_tuple(data['d_set'], data['d_vars'])
+	domain = poly_to_tuple(data['domain'], data['t_var'] + data['x_vars'] + data['d_vars'])
 	r = data['r']
 	tol = data['tol']
 
 	assert(deg_max % 2 == 0)
 
 	#  Want to make 
-	#    b - L rho - d_i s_i^- 
-	#    b + L rho - d_i s_i^+
+	#    b - L rho - dom . sigma^1
+	#    b + L rho - dom . sigma^2
 	#  sdsos
 
 	num_t_var = 1
@@ -93,12 +93,15 @@ def _compute_reach_basic(data):
 	num_d_var = len(data['d_vars'])
 
 	deg_rho = deg_max + 1 - degree(vf)
-	deg_sigma = deg_max - degree(domain)
-	deg_sigma = deg_sigma - (deg_sigma % 2)		# make it even
+	deg_sigma = [deg_max - degree(dom) for dom in domain]
+
+	# make all degrees even
+	for i in range(len(domain)):
+		deg_sigma[i] = deg_sigma[i] - (deg_sigma[i] % 2)
 
 	# half degrees for symmetric matrix variables
 	halfdeg_max = deg_max/2
-	halfdeg_sigma = deg_sigma/2	
+	halfdeg_sigma = [deg/2 for deg in deg_sigma]
 
 	print "Maximal degree", deg_max
 	print "deg(rho) = ", deg_rho
@@ -107,6 +110,7 @@ def _compute_reach_basic(data):
 	# Compute number of variables  
 	# Overall equation, monomial representation
 	n_max_mon = count_monomials_leq(num_t_var + num_x_var + num_d_var, deg_max)
+
 	# Overall equation, square representation
 	n_max_sq = count_monomials_leq(num_t_var + num_x_var + num_d_var, halfdeg_max) * \
 				(count_monomials_leq(num_t_var + num_x_var + num_d_var, halfdeg_max) + 1)/2  
@@ -115,8 +119,9 @@ def _compute_reach_basic(data):
 	n_rho = count_monomials_leq(num_t_var + num_x_var, deg_rho) 		   
 
 	# sigma, square repr.
-	n_sigma_sq = count_monomials_leq(num_var, halfdeg_sigma) * \
-			     (count_monomials_leq(num_var, halfdeg_sigma) + 1)/2
+	n_sigma_sq = [count_monomials_leq(num_t_var + num_x_var + num_d_var, half_deg) * \
+			     (count_monomials_leq(num_t_var + num_x_var + num_d_var, half_deg) + 1)/2 \
+			     for  half_deg in halfdeg_sigma]
 
 	##########################################################
 	### Construct matrices defining linear transformations ###
@@ -125,41 +130,44 @@ def _compute_reach_basic(data):
 	print "setting up matrices..."
 	t_start = time.clock()
 
+	num_var = num_t_var + num_x_var + num_d_var
+
 	# Linear trans b -> coef(b)
-	b_b = PolyLinTrans(num_var)
+	b_b = PolyLinTrans(num_var, num_var)
 	b_b[(0,)*num_var][(0,)*num_var] = 1.
 	nrow, ncol, idxi, idxj, vals = b_b.to_sparse()
 	A_b_b =  scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_max_mon, ncol) )
 
 	# Linear trans coef(rho) -> coef(Lrho)
-	Lrho_rho = Lf(deg_rho, vf)
+	Lrho_rho = Lf(deg_rho, vf) * PolyLinTrans.eye(num_t_var+num_x_var, num_var, deg_rho)
 	nrow, ncol, idxi, idxj, vals = Lrho_rho.to_sparse()
 	A_Lfrho_rho =  scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_max_mon, ncol) )
 
-	# Linear trans coef(s_i) -> coef(s_i d_i)
-	sidi_si = [PolyLinTrans.mul_pol(num_var, deg_sigma, dom) for dom in domain]
-	A_sidi_si = []
+	# Linear trans coef(sigma_x) -> coef(dom_x sigma_x)
+	sigma_x_domsigma_x = [PolyLinTrans.mul_pol(num_var, deg_s, dom) \
+							for (deg_s, dom) in zip(deg_sigma, domain) ]
+	A_sigma_x_domsigma_x = []
 	for i in range(len(domain)):
-		nrow, ncol, idxi, idxj, vals = sidi_si[i].to_sparse_matrix()
-		A_sidi_si.append( scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_max_mon, ncol) ) )
+		nrow, ncol, idxi, idxj, vals = sigma_x_domsigma_x[i].to_sparse_matrix()
+		A_sigma_x_domsigma_x.append( scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_max_mon, ncol) ) )
 
 	# Get identity transformation w.r.t vector representing symmetric matrix
-	nrow, ncol, idxi, idxj, vals = PolyLinTrans.eye(num_var, deg_max).to_sparse_matrix()
+	nrow, ncol, idxi, idxj, vals = PolyLinTrans.eye(num_var, num_var, deg_max).to_sparse_matrix()
 	A_poly_K = scipy.sparse.coo_matrix((vals, (idxi, idxj)), shape = (n_max_mon, ncol))
 
 	# Transformation rho -> rho0
-	rho0_rho = PolyLinTrans.elvar(num_var, deg_rho, 0, 0)
+	rho0_rho = PolyLinTrans.elvar(num_t_var+num_x_var, deg_rho, 0, 0)
 	nrow, ncol, idxi, idxj, vals = rho0_rho.to_sparse()
 	A_rho0_rho = scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (nrow, ncol) )
 	
 	b_rho0 = np.zeros(A_rho0_rho.shape[0])
-	for arg in rho_0:
-		b_rho0[grlex_to_index(arg[0])] = arg[1]
+	for exp, coef in rho_0:
+		b_rho0[grlex_to_index(exp)] = coef
 
 	print "completed in " + str(time.clock() - t_start) + "\n"
 
-	return num_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
-		   A_Lfrho_rho, A_b_b, A_sidi_si, A_poly_K, \
+	return num_t_var, num_x_var, num_d_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
+		   A_Lfrho_rho, A_b_b, A_sigma_x_domsigma_x, A_poly_K, \
 		   A_rho0_rho, b_rho0
 
 def compute_reach_picos(data, solver = 'gurobi'):
@@ -174,7 +182,7 @@ def compute_reach_picos(data, solver = 'gurobi'):
 	except Exception, e:
 		raise e
 
-	num_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
+	num_t_var, num_x_var, num_d_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
 		   A_Lfrho_rho, A_b_b, A_sidi_si, A_poly_K, \
 		   A_rho0_rho, b_rho0 = _compute_reach_basic(data)
 
@@ -204,8 +212,8 @@ def compute_reach_picos(data, solver = 'gurobi'):
 	b = prob.add_variable( 'b', 1 )
 	K_pos = prob.add_variable( 'K_pos', n_max_sq)
 	K_neg = prob.add_variable( 'K_neg', n_max_sq)
-	sig_pos_i = [ prob.add_variable( 'sig_pos[%d]' %i, n_sigma_sq ) for i in range(len(A_sidi_si)) ]
-	sig_neg_i = [ prob.add_variable( 'sig_neg[%d]' %i, n_sigma_sq ) for i in range(len(A_sidi_si)) ]
+	sig_pos_i = [ prob.add_variable( 'sig_pos[%d]' %i, n_sigma_sq[i] ) for i in range(len(A_sidi_si)) ]
+	sig_neg_i = [ prob.add_variable( 'sig_neg[%d]' %i, n_sigma_sq[i] ) for i in range(len(A_sidi_si)) ]
 
 	# Add init constraint
 	prob.add_constraint( A_rho0_rho*rho == b_rho0 )
@@ -241,7 +249,8 @@ def compute_reach_picos(data, solver = 'gurobi'):
 
 	print "completed in " + str(time.clock() - t_start) + "\n"
 
-	return (coef_to_poly(np.array(rho.value), data['variables'])[0], np.array(b.value)[0][0])
+	return (coef_to_poly(np.array(rho.value), data['t_var'] + data['x_vars'])[0], \
+			np.array(b.value)[0][0])
 
 def _coo_zeros(nrow,ncol):
 	'''
@@ -260,7 +269,7 @@ def compute_reach_mosek(data):
 	except Exception, e:
 		raise e
 	
-	num_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
+	num_t_var, num_x_var, num_d_var, n_max_mon, n_max_sq, n_rho, n_sigma_sq, \
 		   A_Lfrho_rho, A_b_b, A_sidi_si, A_poly_K, \
 		   A_rho0_rho, b_rho0 = _compute_reach_basic(data)
 
@@ -281,10 +290,10 @@ def compute_reach_mosek(data):
 	#
 	#   [ n_rho 1  n_sigma_sq ... n_sigma_sq n_sigma_sq ... n_sigma_sq n_max_sq n_max_sq ]
 
-	print "setting up SOCP..."
+	print "setting up Mosek SOCP..."
 	t_start = time.clock()
 
-	numvar = n_rho + 1 + 2 * len(A_sidi_si) * n_sigma_sq + 2 * n_max_sq
+	numvar = n_rho + 1 + 2 * sum(n_sigma_sq) + 2 * n_max_sq
 
 	# Constraints
 	# 
@@ -334,16 +343,16 @@ def compute_reach_mosek(data):
 	task.putconboundslice(0, numcon, [mosek.boundkey.fx] * numcon, beq, beq )
 
 	# Add sdd constraints
-	add_sdd_mosek( task, n_rho + 1 + 2 * len(A_sidi_si) * n_sigma_sq, n_max_sq )		    # make K^+ sdd
-	add_sdd_mosek( task, n_rho + 1 + 2 * len(A_sidi_si) * n_sigma_sq + n_max_sq, n_max_sq) # make K^- sdd
+	add_sdd_mosek( task, n_rho + 1 + 2 * sum(n_sigma_sq), n_max_sq )		    # make K^+ sdd
+	add_sdd_mosek( task, n_rho + 1 + 2 * sum(n_sigma_sq) + n_max_sq, n_max_sq) # make K^- sdd
 
 	for j in range(len(A_sidi_si)):
-		add_sdd_mosek( task, n_rho + 1 + j * n_sigma_sq, n_sigma_sq )				 # make sigma_i^+ sdd
-		add_sdd_mosek( task, n_rho + 1 + (j + len(A_sidi_si)) * n_sigma_sq, n_sigma_sq) # make sigma_i^- sdd
+		add_sdd_mosek( task, n_rho + 1 + sum(n_sigma_sq[:j]), n_sigma_sq[j] )				 # make sigma_i^+ sdd
+		add_sdd_mosek( task, n_rho + 1 + sum(n_sigma_sq) + sum(n_sigma_sq[:j]), n_sigma_sq[j]) # make sigma_i^- sdd
 	
 	print "completed in " + str(time.clock() - t_start) + "\n"
 
-	print "converting & optimizing..."
+	print "optimizing..."
 	t_start = time.clock()
 
 	task.optimize() 
@@ -356,4 +365,4 @@ def compute_reach_mosek(data):
 	task.getxxslice( mosek.soltype.itr, 0, n_rho, opt_rho )
 	task.getxxslice( mosek.soltype.itr, n_rho, n_rho+1, opt_err )
 
-	return ( coef_to_poly(opt_rho, data['variables']), opt_err[0])
+	return ( coef_to_poly(opt_rho, data['t_var'] + data['x_vars']), opt_err[0])

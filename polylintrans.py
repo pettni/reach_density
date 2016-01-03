@@ -74,11 +74,11 @@ def multi_grlex_iter(midx, groups, degrees):
 			for pos_nr, pos in enumerate(group):
 				ret[pos] = mons[group_nr][pos_nr]
 
-
 def grlex_iter(midx, deg = -2):
 	'''
 	Create an iterator that produces ordered grlex exponents, starting
-	with the multiindex 'midx'.
+	with the multiindex 'midx'. The iterator stops when the total degree 
+	reaches 'deg'+1. (default: never stop)
 
 	Example: The iterator grlex_iter( (0,2) ) produces the sequence
 		(0,2) (1,2) (2,0) (0,3) (1,2) (2,1) (3,0) ...
@@ -103,6 +103,7 @@ def grlex_iter(midx, deg = -2):
 			raise StopIteration
 
 		yield tuple(midx)
+
 		if right_ptr == 0:
 			midx = [0] * (len(midx) - 1) + [sum(midx) + 1]
 			right_ptr = len(midx) - 1
@@ -268,26 +269,30 @@ class PolyLinTransRow(object):
 class PolyLinTrans(object):
 	"""Class representing a linear transformation of polynomial coefficients"""
 
-	def __init__(self, n):
-		self.n = n 		# number of variables
+	def __init__(self, n0, n1):
+		self.n0 = n0 		# number of variables
+		self.n1 = n1 		# final number of variables
 		self.d0 = 0   	# initial degree
 		self.d1 = 0		# final degree
 		self.cols = {}
 
 	def rows(self):
-		return count_monomials_leq(self.n, self.d1)
+		return count_monomials_leq(self.n1, self.d1)
 
 	def cols(self):
-		return count_monomials_leq(self.n, self.d0)
+		return count_monomials_leq(self.n0, self.d0)
 
-	def eye(n, d):
+	def eye(n0, n1, d):
 		'''
 		Identity transformation
 		'''
-		p = PolyLinTrans(n)
+		if n1 < n0:
+			raise InputError('eye requires n1 >= n0')
+		p = PolyLinTrans(n0, n1)
 		p.d0 = d
-		for idx in _iter_idx((), n, d):
-			p[idx][idx] = 1.
+		for idx in grlex_iter((0,) *  n0, d):
+			idx_mod = idx + (0,) * (n1-n0)
+			p[idx][idx_mod] = 1.
 		p.d1 = d
 		return p
 	eye = staticmethod(eye)
@@ -296,9 +301,9 @@ class PolyLinTrans(object):
 		'''
 		Differentiation transformation w.r.t variable xi
 		'''
-		p = PolyLinTrans(n)
+		p = PolyLinTrans(n,n)
 		p.d0 = d
-		for idx in _iter_idx((), n, d):
+		for idx in grlex_iter((0,)*n, d):
 			k = idx[xi]
 			new_idx = tuple([(idx[i] if i != xi else idx[i]-1) for i in range(n)])
 			if min(new_idx) >= 0:
@@ -311,10 +316,10 @@ class PolyLinTrans(object):
 		'''
 		Integration transformation w.r.t variable xi
 		'''
-		p = PolyLinTrans(n)
+		p = PolyLinTrans(n,n)
 		p.d0 = d
 		p.d1 = d+1
-		for idx in _iter_idx((), n, d):
+		for idx in grlex_iter((0,)*n, d):
 			k = idx[xi]
 			new_idx = tuple([(idx[i] if i != xi else idx[i]+1) for i in range(n)])
 			p[idx][new_idx] = 1./(float(k)+1)
@@ -323,12 +328,17 @@ class PolyLinTrans(object):
 
 	def elvar(n, d, xi, val):
 		'''
-		Transformation resulting from setting xi = val (new polynomial has less variables)
+		Transformation resulting from setting xi[i] = val[i] (new polynomial has less variables)
 		'''
-		p = PolyLinTrans(n)
-		for idx in _iter_idx((), n, d):
-			new_idx = list(idx)
-			new_idx[xi] = 0
+		if isinstance(xi, list):
+			xi, val = [list(x) for x in zip(*sorted(zip(xi, val), key=lambda pair: pair[0]))]
+			if len(xi) > 1:
+				return PolyLinTrans.elvar(n-1,d,xi[:-1], val[:-1]) * PolyLinTrans.elvar(n,d,xi[-1], val[-1])
+			else:
+				return PolyLinTrans.elvar(n,d,xi[0], val[0])
+		p = PolyLinTrans(n,n-1)
+		for idx in grlex_iter((0,)*n, d):
+			new_idx = [idx[i] for i in range(len(idx)) if i != xi]
 			p[idx][tuple(new_idx)] += val**idx[xi]
 		p.updated()
 		return p
@@ -339,10 +349,10 @@ class PolyLinTrans(object):
 		Transformation representing multiplication of a degree d polynomial with a
 		polynomial poly represented as ( ( midx1, cf1 ), (midx2, cf2), ... )
 		'''
-		p = PolyLinTrans(n)
+		p = PolyLinTrans(n,n)
 		maxdeg = 0
 		for midx, cf in poly:
-			for idx in _iter_idx((), n, d):
+			for idx in grlex_iter((0,)*n, d):
 				new_idx = tuple([idx[i] + midx[i] for i in range(n)])
 				p[idx][new_idx] = float(cf)
 			maxdeg = max([maxdeg, sum(midx)])
@@ -351,7 +361,7 @@ class PolyLinTrans(object):
 		return p
 	mul_pol = staticmethod(mul_pol)
 
-	def integrate(n, d, dims, box):
+	def integrate(n, d, dims, boxes):
 		'''
 		Transformation representing integration over variables in 'dims'
 		over a hyperbox 'box'
@@ -360,28 +370,36 @@ class PolyLinTrans(object):
 			is obtained by mon(q) = A_int * mon(p) for 
 			>> A_int = integrate(3,2,[1],[[0,1]])
 		'''
-		p = PolyLinTrans.eye(n,d)  # start with right-hand identity
-		for (i, xi) in enumerate(dims):
-			int_trans = PolyLinTrans.int(n,d,xi)
-			upper_trans = PolyLinTrans.elvar(n,d+1,xi,box[i][1])
-			lower_trans = PolyLinTrans.elvar(n,d+1,xi,box[i][0])
+		dim_box = sorted(zip(dims, boxes), key = lambda obj : -obj[0])
+
+		p = PolyLinTrans.eye(n,n,d)  # start with right-hand identity
+
+		for (dim, box) in dim_box:
+			int_trans = PolyLinTrans.int(p.n1,d,dim)  # p.n1 -> p.n1
+			upper_trans = PolyLinTrans.elvar(p.n1,d+1,dim,box[1]) # p.n1 -> p.n1-1
+			lower_trans = PolyLinTrans.elvar(p.n1,d+1,dim,box[0]) # p.n1 -> p.n1-1
 			p = (upper_trans - lower_trans) * int_trans * p
+
+		# for (i, xi) in enumerate(dims):
+		# 	int_trans = PolyLinTrans.int(n,d,xi)
+		# 	upper_trans = PolyLinTrans.elvar(n,d+1,xi,box[i][1])
+		# 	lower_trans = PolyLinTrans.elvar(n,d+1,xi,box[i][0])
+		# 	p = (upper_trans - lower_trans) * int_trans * p
 		p.updated() # degrees become misleading here..
 		return p
 	integrate = staticmethod(integrate)
 
 	def __getitem__(self, midx):
-		if len(midx) != self.n:
+		if len(midx) != self.n0:
 			raise TypeError('Multiindex does not match polynomial dimension')
 		try:
 			return self.cols[midx]
 		except KeyError, e:
-			self.cols[midx] = PolyLinTransRow(self.n)
+			self.cols[midx] = PolyLinTransRow(self.n1)
 			return self.cols[midx]
 
 	def __str__(self):
-		ret = 'Transformation in ' + str(self.n) + ' variables from degree ' + \
-			 str(self.d0) + ' to degree ' + str(self.d1) + ': \n'
+		ret = 'Transformation from n=%d, d=%d to n=%d, d=%d : \n' % (self.n0, self.d0, self.n1, self.d1)
 		for key1, col in self.cols.iteritems():
 			for key2, val in col.coeffs.iteritems():
 				ret += str(key1) + ' --> ' + str(key2) + ' : ' + str(val) + '\n'
@@ -389,9 +407,9 @@ class PolyLinTrans(object):
 
 	def __add__(self, other):
 		""" Sum of two linear transformations """
-		if not self.n == other.n:
+		if not self.n0 == other.n0 and self.n1 == other.n1:
 			raise TypeError('Dimension mismatch')
-		ret = PolyLinTrans(self.n)
+		ret = PolyLinTrans(self.n0, self.n1)
 		for midx1, col in chain(self.cols.iteritems(), other.cols.iteritems()):
 			for midx2, val in col.coeffs.iteritems():
 				try:
@@ -404,6 +422,8 @@ class PolyLinTrans(object):
 		return ret
 
 	def __iadd__(self, other):
+		if not self.n0 == other.n0 and self.n1 == other.n1:
+			raise TypeError('Dimension mismatch')
 		for midx1, col in other.cols.iteritems():
 			for midx2, val in col.coeffs.iteritems():
 				try:
@@ -417,7 +437,7 @@ class PolyLinTrans(object):
 
 	def __sub__(self, other):
 		""" Difference of two linear transformations """
-		if not self.n == other.n:
+		if not self.n0 == other.n0 and self.n1 == other.n1:
 			raise TypeError('Dimension mismatch')
 		ret = self
 		for midx1, col in other.cols.iteritems():
@@ -432,10 +452,10 @@ class PolyLinTrans(object):
 		return ret
 
 	def __mul__(self, other):
-		""" Product of two linear transformations """
-		if not self.n == other.n:
+		""" Product of two linear transformations (other is the right one) """
+		if not self.n0 == other.n1:
 			raise TypeError('Dimension mismatch')
-		ret = PolyLinTrans(self.n)
+		ret = PolyLinTrans(other.n0, self.n1)
 		for midx1, col in other.cols.iteritems():
 			for midxk, val1 in other[midx1].coeffs.iteritems():
 				for midx2, val2 in self[midxk].coeffs.iteritems():
@@ -479,13 +499,13 @@ class PolyLinTrans(object):
 		i = []
 		j = []
 		v = []
-		nrow = count_monomials_leq(self.n, self.d1)
-		ncol = count_monomials_leq(self.n, self.d0)
-		for key1, col in self.cols.iteritems():
-			midx1 = grlex_to_index(key1)
-			for key2, val in col.coeffs.iteritems():
-				i.append(grlex_to_index(key2))
-				j.append(midx1)
+		nrow = count_monomials_leq(self.n1, self.d1)
+		ncol = count_monomials_leq(self.n0, self.d0)
+		for midx1, col in self.cols.iteritems():
+			idx1 = grlex_to_index(midx1)
+			for midx2, val in col.coeffs.iteritems():
+				i.append(grlex_to_index(midx2))
+				j.append(idx1)
 				v.append(val)
 		return nrow, ncol, i, j, v
 
@@ -498,10 +518,10 @@ class PolyLinTrans(object):
 			is a grlex coefficient vector of the transformed polynomial Trans( x^T S x ).
 		"""
 		half_deg = int(ceil(float(self.d0)/2))
-		num_mon = count_monomials_leq(self.n, half_deg)
+		num_mon = count_monomials_leq(self.n0, half_deg)
 		len_vec = num_mon*(num_mon+1)/2
 
-		coefs, exps = vec_to_grlex(len_vec, self.n)
+		coefs, exps = vec_to_grlex(len_vec, self.n0)
 		
 		i = []
 		j = []
@@ -513,6 +533,6 @@ class PolyLinTrans(object):
 				j.append( k )
 				v.append( val * coef )
 
-		nrow = count_monomials_leq(self.n, self.d1)
+		nrow = count_monomials_leq(self.n1, self.d1)
 		ncol = len_vec
 		return nrow, ncol, i, j, v

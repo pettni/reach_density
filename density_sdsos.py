@@ -366,3 +366,228 @@ def compute_reach_mosek(data):
 	task.getxxslice( mosek.soltype.itr, n_rho, n_rho+1, opt_err )
 
 	return ( coef_to_poly(opt_rho, data['t_var'] + data['x_vars']), opt_err[0])
+
+
+def compute_inv_mosek(data):
+	'''
+	Solve the density problem using mosek
+	(https://www.mosek.com).
+	'''
+
+	try:
+		import mosek
+	except Exception, e:
+		raise e
+	
+	deg_max = data['maxdeg_rho']
+	vf = poly_to_tuple(data['vector_field'], data['t_var'] + data['x_vars'] + data['d_vars'])
+	T = data['T']
+	r = data['r']
+	tol = data['tol']
+
+	# t-x-d domain in vars t-x-d
+	txd_domain_txd = poly_to_tuple(data['x_domain'] + [data['t_var'][0]*(T-data['t_var'][0])] + data['d_domain'], data['t_var'] + data['x_vars'] + data['d_vars'])
+
+	x_domain_x   = poly_to_tuple(data['x_domain'], data['x_vars'])
+
+	assert(deg_max % 2 == 0)
+
+	#  Want to make 
+	#    b - L rho - dom . sigma^1
+	#    b + L rho - dom . sigma^2
+	#  sdsos
+
+	num_t_var = 1
+	num_x_var = len(data['x_vars'])
+	num_d_var = len(data['d_vars'])
+
+	deg_rho = deg_max + 1 - degree(vf)
+
+	deg_sigma_txd = [deg_max - degree(dom) for dom in txd_domain_txd]
+	deg_sigma_x = [deg_max - degree(dom) for dom in x_domain_x]
+	deg_sigma_tx = [deg_max - degree(dom) for dom in x_domain_tx]
+
+	# make all degrees even
+	for i in range(len(txd_domain_txd)):
+		deg_sigma_txd[i] = deg_sigma_txd[i] - (deg_sigma_txd[i] % 2)
+
+	for i in range(len(x_domain_x)):
+		deg_sigma_x[i] = deg_sigma_x[i] - (deg_sigma_x[i] % 2)
+
+	# half degrees for symmetric matrix variables
+	halfdeg_max = deg_max/2
+	halfdeg_sigma_txd = [deg/2 for deg in deg_sigma_txd]
+	halfdeg_sigma_x = [deg/2 for deg in deg_sigma_x]
+
+	print "Maximal degree", deg_max
+	print "deg(rho) = ", deg_rho
+	print "deg(sigma_txd) = ", deg_sigma_txd, "\n"
+	print "deg(sigma_x) = ", deg_sigma_x, "\n"
+
+	# Compute number of variables  
+	# Liouville equation, monomial representation
+	n_liou_mon = count_monomials_leq(num_t_var + num_x_var + num_d_var, deg_max)
+
+	# Liouville equation, square representation
+	n_liou_sq = count_monomials_leq(num_t_var + num_x_var + num_d_var, halfdeg_max) * \
+				(count_monomials_leq(num_t_var + num_x_var + num_d_var, halfdeg_max) + 1)/2  
+	
+	# Invariance equation, monomial representation
+	n_inv_mon = count_monomials_leq(num_x_var, deg_max)
+
+	# Invariance equation, square representation
+	n_inv_sq = count_monomials_leq(num_x_var, halfdeg_max) * \
+				(count_monomials_leq(num_x_var, halfdeg_max) + 1)/2  
+
+	# rho(t,x), monomial repr.
+	n_rho = count_monomials_leq(num_t_var + num_x_var, deg_rho) 		   
+
+	# sigma, square repr.
+	n_sigma_txd_sq = [count_monomials_leq(num_t_var + num_x_var + num_d_var, half_deg) * \
+			     (count_monomials_leq(num_t_var + num_x_var + num_d_var, half_deg) + 1)/2 \
+			     for  half_deg in halfdeg_sigma_txd]
+
+	n_sigma_x_sq = [count_monomials_leq(num_x_var, half_deg) * \
+			     (count_monomials_leq(num_x_var, half_deg) + 1)/2 \
+			     for  half_deg in halfdeg_sigma_x]
+
+	##########################################################
+	### Construct matrices defining linear transformations ###
+	##########################################################
+
+	print "setting up matrices..."
+	t_start = time.clock()
+
+	num_var = num_t_var + num_x_var + num_d_var
+
+	# Linear trans b -> coef(b)
+	b_b = PolyLinTrans(num_var, num_var)
+	b_b[(0,)*num_var][(0,)*num_var] = 1.
+	nrow, ncol, idxi, idxj, vals = b_b.to_sparse()
+	A_b_b =  scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_liou_mon, ncol) )
+
+	# Linear trans coef(rho) -> coef(Lrho)
+	Lrho_rho = Lf(deg_rho, vf) * PolyLinTrans.eye(num_t_var+num_x_var, num_var, deg_rho)
+	nrow, ncol, idxi, idxj, vals = Lrho_rho.to_sparse()
+	A_Lfrho_rho =  scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_liou_mon, ncol) )
+
+	# Linear trans coef(sigma_x) -> coef(dom_x sigma_x)
+	domsigmatxd_sigmatxd = [PolyLinTrans.mul_pol(num_var, deg_s, dom) \
+							for (deg_s, dom) in zip(deg_sigma_txd, txd_domain_txd) ]
+	A_domsigmatxd_sigmatxd = []
+	for i in range(len(txd_domain_txd)):
+		nrow, ncol, idxi, idxj, vals = domsigmatxd_sigmatxd[i].to_sparse_matrix()
+		A_domsigmatxd_sigmatxd.append( scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_liou_mon, ncol) ) )
+
+	print zip(deg_sigma_x, x_domain_x)
+
+	# Linear trans coef(sigma_x) -> coef(dom_x sigma_x)
+	domsigmax_sigmax = [PolyLinTrans.mul_pol(num_x_var, deg_s, dom) \
+							for (deg_s, dom) in zip(deg_sigma_x, x_domain_x) ]
+	A_domsigmax_sigmax = []
+	for i in range(len(x_domain_x)):
+		nrow, ncol, idxi, idxj, vals = domsigmax_sigmax[i].to_sparse_matrix()
+		A_domsigmax_sigmax.append( scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (n_inv_mon, ncol) ) )
+
+
+	# Get identity transformation w.r.t vector representing symmetric matrix
+	nrow, ncol, idxi, idxj, vals = PolyLinTrans.eye(num_var, num_var, deg_max).to_sparse_matrix()
+	A_poly_K_liou = scipy.sparse.coo_matrix((vals, (idxi, idxj)), shape = (n_liou_mon, ncol))
+
+	nrow, ncol, idxi, idxj, vals = PolyLinTrans.eye(num_x_var, num_x_var, deg_max).to_sparse_matrix()
+	A_poly_K_cinv = scipy.sparse.coo_matrix((vals, (idxi, idxj)), shape = (n_inv_mon, ncol))
+
+	# Transformation rho -> rho0
+	rho0_rho = PolyLinTrans.elvar(num_t_var+num_x_var, deg_rho, 0, 0)
+	nrow, ncol, idxi, idxj, vals = rho0_rho.to_sparse()
+	A_rho0_rho = scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (nrow, ncol) )
+
+	# Transformation rho -> rhoT
+	rhoT_rho = PolyLinTrans.elvar(num_t_var+num_x_var, deg_rho, 0, T)
+	nrow, ncol, idxi, idxj, vals = rho0_rho.to_sparse()
+	A_rhoT_rho = scipy.sparse.coo_matrix( (vals, (idxi, idxj)), shape = (nrow, ncol) )
+
+
+	print "completed in " + str(time.clock() - t_start) + "\n"
+
+	A_sd_s_xtd = scipy.sparse.bmat([ A_domsigmatxd_sigmatxd ])
+	A_sd_s_x = scipy.sparse.bmat([ A_domsigmax_sigmax ])
+
+	# Variable vector
+	# 
+	#  [ rho  b  sigma_xtd^1 sigma_xtd^2 sigma_x K^1 K^2 K^3 ]
+	#
+	#  with dimensions
+
+	numvars = [n_rho, 1, sum(n_sigma_txd_sq), sum(n_sigma_txd_sq), sum(n_sigma_x_sq), n_liou_sq, n_liou_sq, n_inv_sq]
+	numvar = sum(numvars)
+
+	print "setting up Mosek SOCP..."
+	t_start = time.clock()
+
+	# Constraints
+	# 
+	# 	A_Lfrho_rho * rho + b - sigma_xtd^1 d_xtd - A_poly_K * K^1 = 0      (1)  (vars: t,x,d)
+	#  -A_Lfrho_rho * rho + b - sigma_xtd^2 d_xtd - A_poly_K * K^2 = 0		(2)  (vars: t,x,d)
+	#   ( A_rho0_rho - A_rhoT_rho ) * rho - sigma_x d_x - A_poly_K K^3 = 0	(3)  (vars: x)	
+	# 	rho - sigma_xt^2 d_xt - A_poly_K K^4 = 0							(4)  (vars: t,x)
+	#  K^1, K^2, K^3, sigma_xtd^1, sigma_xtd^2, sigma_x sdd
+	#
+	#  Note: rho is in variables (t,x), 
+
+	numcon = 2 * n_liou_mon + n_inv_mon
+
+	Aeq = scipy.sparse.bmat( 
+	#         rho                  	    b       sigma_xtd^1  sigma_xtd^2  sigma_x   K^1             K^2             K^3
+		[[ A_Lfrho_rho, 				A_b_b, 	-A_sd_s_xtd, None,        None, 	-A_poly_K_liou, None, 	  		None		  ],
+		 [ -A_Lfrho_rho, 				A_b_b, 	None,        -A_sd_s_xtd, None,     None,	   		-A_poly_K_liou, None 		  ],
+		 [ A_rho0_rho-0.1*A_rhoT_rho, 	None, 	None, 		 None,		  A_sd_s_x,	None, 	   		None, 	  		A_poly_K_cinv ]],
+		 format = 'coo')
+	beq = np.zeros(2 * n_liou_mon + n_inv_mon)
+
+	# Set up mosek environment
+	env = mosek.Env() 
+	task = env.Task(0,0)
+
+	task.appendvars(numvar) 
+	task.appendcons(numcon)
+
+	# Make all vars unbounded
+	task.putvarboundslice(0, numvar, [mosek.boundkey.fr] * numvar, [0.]*numvar, [0.]*numvar )
+
+	# Add objective function
+	task.putcj(n_rho, 1.)
+	task.putobjsense(mosek.objsense.minimize) 
+
+	# Add eq constraints
+	task.putaijlist( Aeq.row, Aeq.col, Aeq.data )
+	task.putconboundslice(0, numcon, [mosek.boundkey.fx] * numcon, beq, beq )
+
+	# Add sdd constraints
+	add_sdd_mosek( task, sum(numvars[:5]), numvars[5] )		    # make K^1 sdd
+	add_sdd_mosek( task, sum(numvars[:6]), numvars[6] )		    # make K^2 sdd
+	add_sdd_mosek( task, sum(numvars[:7]), numvars[7] )		    # make K^3 sdd		
+
+	for j in range(len(txd_domain_txd)):
+		add_sdd_mosek( task, n_rho + 1 + sum(n_sigma_txd_sq[:j]), n_sigma_txd_sq[j] )				   	# make sigma_xtd^1 sdd
+		add_sdd_mosek( task, n_rho + 1 + sum(n_sigma_txd_sq) + sum(n_sigma_txd_sq[:j]), n_sigma_txd_sq[j]) 	# make sigma_xtd^2 sdd
+	
+	for j in range(len(x_domain_x)):
+		add_sdd_mosek( task, sum(numvars[:4]) + sum(n_sigma_x_sq[:j]), n_sigma_x_sq[j] )			# make sigma_x sdd
+
+	print "completed in " + str(time.clock() - t_start) + "\n"
+
+	print "optimizing..."
+	t_start = time.clock()
+
+	task.optimize() 
+
+	print "completed in " + str(time.clock() - t_start) + "\n"
+
+	# extract solution
+	opt_rho = np.zeros(n_rho)
+	opt_err = np.zeros(1)
+	task.getxxslice( mosek.soltype.itr, 0, n_rho, opt_rho )
+	task.getxxslice( mosek.soltype.itr, n_rho, n_rho+1, opt_err )
+
+	return ( coef_to_poly(opt_rho, data['t_var'] + data['x_vars']), opt_err[0])

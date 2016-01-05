@@ -236,16 +236,6 @@ def _count_monomials_eq(n, d):
 	'''Number of monomials in n variables of degree equal to d'''
 	return int(comb(n+d-1, d))
 
-def _iter_idx(pre, n, d):
-	""" Iterate everything to the right of "pre" """
-	if len(pre) == n-1:
-		for di in range(d + 1 - sum(pre)):
-			yield pre + (di,)
-	else:
-		for di in range(d + 1 - sum(pre)):
-			for idx in _iter_idx(pre + (di,), n, d):
-				yield idx
-
 class PolyLinTransRow(object):
 	"""docstring for PolyLinTransRow"""
 

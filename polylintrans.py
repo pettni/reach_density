@@ -443,6 +443,13 @@ class PolyLinTrans(object):
 
 	def __mul__(self, other):
 		""" Product of two linear transformations (other is the right one) """
+		if not isinstance(other, PolyLinTrans):
+			# assume scalar multiplication
+			ret = self
+			for midx1, col in ret.cols.iteritems():
+				for midx2, val in col.coeffs.iteritems():
+					ret[midx1][midx2] *= other
+			return ret
 		if not self.n0 == other.n1:
 			raise TypeError('Dimension mismatch')
 		ret = PolyLinTrans(other.n0, self.n1)

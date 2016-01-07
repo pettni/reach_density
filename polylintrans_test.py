@@ -141,6 +141,13 @@ class PolyLinTransTests(unittest.TestCase):
 		self.assertEquals(L[2,0][1,0], 2)
 		self.assertEquals(L[4,0][3,0], 0) # above degree
 
+	def test_mul(self):
+		L = PolyLinTrans.eye(2,2,3)
+		L2 = L * 3
+		_,_,idxi,idxj,vals = L2.to_sparse()
+		self.assertEquals(idxi, idxj)
+		self.assertEquals(vals, [3] * 10)
+
 	def test_int(self):
 		L = PolyLinTrans.int(2,2,0)
 		self.assertEquals(L[1,1][2,1], 1./2)

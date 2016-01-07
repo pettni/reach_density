@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import sys
 sys.path.append('../')
 
-from density_sdsos import compute_inv_mosek
+from density_sdsos import compute_inv_mosek2
 
 from plot_2d import animate
 
@@ -27,7 +27,7 @@ data = {'t_var': [t],
 		'alpha': 0.95}
 
 
-rho = compute_inv_mosek(data)
+rho = compute_inv_mosek2(data)
 
 print "Density found: rho(t,x1,x2) = ", rho
 

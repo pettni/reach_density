@@ -12,15 +12,15 @@ from plot_2d import animate
 # Initialize symbolic variables
 t, x1, x2, d= sp.symbols('t,x1,x2,d')
 
-dmax = 0.03
 tmax = 1
+dmax = 0.35
 data = {'t_var': [t],
 		'x_vars': [x1, x2],
-		'maxdeg_rho' : 12, 
-		'vector_field': [x2**2-0.1*x1, -x1**2*x2-0.1+d], 
+		'd_vars': [d],
+		'maxdeg_rho' : 10, 
+		'vector_field': [-(0.2+d)*x1-x2, x1-0.2*x2], 
 		'x_domain': [(x1-(-2))*(2-x1), (x2-(-2))*(2-x2)],
 		'K_set': [(x1-(-1.1))*(1.1-x1), (x2-(-1.1))*(1.1-x2)],
-		'd_vars': [d],
 		'd_domain': [(d-(-dmax))*(dmax-d)],
 		'T': 1,
 		'tol': 1e-5,
@@ -30,13 +30,10 @@ data = {'t_var': [t],
 
 rho = compute_inv_mosek(data)
 
-print "Density found: rho(t,x1,x2) = ", rho
-
 rho0 = sp.lambdify([x1,x2], rho.subs(t,0))
 rhoT = sp.lambdify([x1,x2], rho.subs(t,data['T']))
 
-# increase 
-X1, X2 = np.mgrid[-2:2:200j, -2:2:200j]
+X1, X2 = np.mgrid[-2:2:1000j, -2:2:1000j]
 
 def plotdata_semi(list):
 	l0 = (sp.lambdify([x1,x2], list[0])(X1, X2) > 0)
@@ -80,6 +77,6 @@ U2_n, V2_n = U2/np.sqrt(U2**2+V2**2), V2/np.sqrt(U2**2+V2**2)
 plt.quiver(X1, X2,  U1_n, V1_n, color='black')
 plt.quiver(X1, X2,  U2_n, V2_n, color='black')
 
-plt.show()
+plt.figure(4)
 
-# animate([t,x1,x2], data['vector_field'], rho, 0, 1.1*data['T'])
+plt.show()

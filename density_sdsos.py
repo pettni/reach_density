@@ -427,7 +427,6 @@ def add_sdsos(T, b, domain, variables, maxdeg):
 	
 	return Aeq1, Aeq2, beq, pos_sdsos
 
-
 def compute_inv_mosek(data):
 	'''
 	Solve the density problem using mosek
@@ -524,6 +523,7 @@ def compute_inv_mosek(data):
 
 	# Set up mosek environment
 	env = mosek.Env() 
+
 	task = env.Task(0,0)
 
 	numcon = Aeq.shape[0]
@@ -555,10 +555,18 @@ def compute_inv_mosek(data):
 
 	task.optimize() 
 
-	print "completed in " + str(time.clock() - t_start) + "\n"
+	solsta = task.getsolsta(mosek.soltype.itr)
 
-	# extract solution
-	opt_rho = np.zeros(Aeq11.shape[1])
-	task.getxxslice( mosek.soltype.itr, 0, Aeq11.shape[1], opt_rho )
+	if (solsta == mosek.solsta.optimal or solsta == mosek.solsta.near_optimal): 
+		print "completed in " + str(time.clock() - t_start) + "\n"
+		print "status", solsta
+		# extract solution
+		opt_rho = np.zeros(Aeq11.shape[1])
+		task.getxxslice( mosek.soltype.itr, 0, Aeq11.shape[1], opt_rho )
 
-	return coef_to_poly(opt_rho, data['t_var'] + data['x_vars'])
+		return coef_to_poly(opt_rho, data['t_var'] + data['x_vars'])
+
+	else: 
+		print "Optimal solution not found"
+		print solsta
+		return None

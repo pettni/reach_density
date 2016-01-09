@@ -11,19 +11,18 @@ from density_sdsos import *
 from plot_2d import plot2d_invariance, plot2d_surf
 
 # Initialize symbolic variables
-x1, x2, d1, d2 = sp.symbols('x1,x2,d1,d2')
+x1, x2, u = sp.symbols('x1,x2,u')
 
 tmax = 1
-d1max = 0.25
-d2max = 0.1
+umax = 0.1
 data = { # dynamics
 		'x_vars': [x1, x2],
-		'd_vars': [d1, d2],
-		'vector_field': [-(0.2+d1)*x1-x2, x1-0.2*x2+d2], 
+		'u_vars': [u],
+		'vector_field': [-0.2*x1-x2, x1-0.2*x2+u], 
 		
 		# domains
 		'X': [(x1-(-2))*(2-x1), (x2-(-2))*(2-x2)],
-		'D': [(d1-(-d1max))*(d1max-d1), (d2-(-d2max))*(d2max-d2)],
+		'U': [(u-(-umax))*(umax-u)],
 		
 		# specification
 		'K': [(x1-(-1.5))*(1.5-x1), (x2-(-1.5))*(1.5-x2)],
@@ -35,9 +34,9 @@ data = { # dynamics
 		'alpha': 0.05}
 
 
-rho = compute_inv_mosek_not(data)
+rho = compute_cinv_mosek_not(data)
 fig1 = plt.figure(1)
-plot2d_invariance(rho, data, list(product([-d1max, d1max], [-d2max, d2max])), fig1.gca())
+plot2d_invariance(rho, data, [(umax,), (-umax,)], fig1.gca())
 
 fig2 = plt.figure(2)
 plot2d_surf(rho, data, fig2.gca(projection='3d'))

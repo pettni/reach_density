@@ -570,3 +570,271 @@ def compute_inv_mosek(data):
 		print "Optimal solution not found"
 		print solsta
 		return None
+
+def compute_inv_mosek_not(data):
+	'''
+	Set up and solve
+     sup \int_{K} rho(x) dx
+     s.t. grad rho * f(x,d) >= -alpha * rho(x)   on K x D 	(1)
+          rho(x) <= 0							 on X\K     (2)
+          rho(x) <= 1							 on K       (3)
+    using (https://www.mosek.com).
+	'''
+
+	try:
+		import mosek
+	except Exception, e:
+		raise e
+	
+	deg_max = data['maxdeg']
+	assert(deg_max % 2 == 0)
+
+	vf = poly_to_tuple(data['vector_field'], data['x_vars'] + data['d_vars'])
+
+
+	XK_set = [data['X'] + [-k_dom] for k_dom in data['K']]
+
+	# Number of states of different kinds
+	########################################
+	num_x_var = len(data['x_vars'])
+	num_d_var = len(data['d_vars'])
+
+	deg_rho = deg_max + 1 - degree(vf)
+
+	print "setting up matrices..."
+	t_start = time.clock()
+
+	# eq (1)
+	T_eq1 = PolyLinTrans(num_x_var + num_d_var, num_x_var + num_d_var)
+	for i in range(num_x_var):
+		dx = PolyLinTrans.diff(num_x_var + num_d_var, deg_rho, i)
+		vf_mul = PolyLinTrans.mul_pol(num_x_var + num_d_var, dx.d1, vf[i])
+		T_eq1 +=  vf_mul * dx
+	T_eq1 = T_eq1 * PolyLinTrans.eye(num_x_var, num_x_var + num_d_var, deg_rho)
+	
+	T_eq1 += PolyLinTrans.eye(num_x_var, num_x_var + num_d_var, deg_rho) * data['alpha']
+
+	Aeq11, Aeq12, beq1, pos_sdsos1 = add_sdsos(T_eq1, data['tol'], \
+			data['K'] + data['D'], \
+			data['x_vars'] + data['d_vars'], \
+			deg_max)
+
+	# eq (3)
+	T_eq3 = -PolyLinTrans.eye(num_x_var, num_x_var, deg_rho)
+	Aeq31, Aeq32, beq3, pos_sdsos3 = add_sdsos(T_eq3, -1+data['tol'], \
+			data['K'], \
+			data['x_vars'], \
+			deg_max)
+
+	Aeq = scipy.sparse.bmat([[ Aeq11, Aeq12, None], [Aeq31, None, Aeq32]], format='coo') 
+	beq = np.hstack([beq1, beq3])
+
+	pos_sdsos = [(Aeq11.shape[1] + pos, length) for (pos, length) in pos_sdsos1] + \
+				[(Aeq11.shape[1] + Aeq12.shape[1] + pos, length) for (pos, length) in pos_sdsos3]
+
+	# eq(2)
+	T_eq2 = -PolyLinTrans.eye(num_x_var, num_x_var, deg_rho)
+	for XK_set_i in XK_set:
+		Aeq21, Aeq22, beq2, pos_sdsos2 = add_sdsos(T_eq2, data['tol'], \
+				XK_set_i, \
+				data['x_vars'], \
+				deg_max)
+		Aeq21 = scipy.sparse.bmat([[Aeq21, _coo_zeros(Aeq21.shape[0], Aeq.shape[1] - Aeq21.shape[1])]])
+
+		pos_sdsos += [(Aeq.shape[1] + pos, length) for (pos, length) in pos_sdsos2]
+
+		Aeq = scipy.sparse.bmat([[Aeq, None], [Aeq21, Aeq22]])
+		beq = np.hstack([beq, beq2])
+
+
+	# objective
+	int_trans = PolyLinTrans.integrate(num_x_var, deg_rho, range(num_x_var), [[-1,1]]*num_x_var)
+	_, _, _, obj_idx, obj_vals = int_trans.to_sparse()
+
+	print "completed in " + str(time.clock() - t_start) + "\n"
+	print "setting up Mosek SOCP..."
+	t_start = time.clock()
+
+	# Set up mosek environment
+	env = mosek.Env() 
+
+	task = env.Task(0,0)
+
+	numcon = Aeq.shape[0]
+	numvar = Aeq.shape[1]
+
+	task.appendvars(numvar) 
+	task.appendcons(numcon)
+
+	# Make all vars unbounded
+	task.putvarboundslice(0, numvar, [mosek.boundkey.fr] * numvar, [0.]*numvar, [0.]*numvar )
+
+	# Add objective function
+	for (i,v) in zip(obj_idx, obj_vals):
+		task.putcj(i, v)
+	task.putobjsense(mosek.objsense.maximize) 
+
+	# Add eq constraints
+	task.putaijlist( Aeq.row, Aeq.col, Aeq.data )
+	task.putconboundslice(0, numcon, [mosek.boundkey.fx] * numcon, beq, beq )
+
+	# Add sdd constraints
+	for pos, length in pos_sdsos:
+		add_sdd_mosek( task, pos, length )
+
+	print "completed in " + str(time.clock() - t_start) + "\n"
+
+	print "optimizing..."
+	t_start = time.clock()
+
+	task.optimize() 
+
+	solsta = task.getsolsta(mosek.soltype.itr)
+
+	if (solsta == mosek.solsta.optimal or solsta == mosek.solsta.near_optimal): 
+		print "completed in " + str(time.clock() - t_start) + "\n"
+		print "status", solsta
+		# extract solution
+		opt_rho = np.zeros(Aeq11.shape[1])
+		task.getxxslice( mosek.soltype.itr, 0, Aeq11.shape[1], opt_rho )
+
+		return coef_to_poly(opt_rho, data['x_vars'])
+
+	else: 
+		print "Optimal solution not found"
+		print solsta
+		return None
+
+def compute_cinv_mosek_not(data):
+	'''
+	Set up and solve
+     sup \int_{K} rho(x) dx
+     s.t. grad rho * f(x,d) >= alpha * rho(x)    on K x U 	(1)
+          rho(x) >= 0							 on X\K     (2)
+          rho(x) <= 1							 on K       (3)
+    using (https://www.mosek.com).
+	'''
+
+	try:
+		import mosek
+	except Exception, e:
+		raise e
+	
+	deg_max = data['maxdeg']
+	assert(deg_max % 2 == 0)
+
+	vf = poly_to_tuple(data['vector_field'], data['x_vars'] + data['u_vars'])
+
+	# X\K set
+	XK_set = [data['X'] + [-ki] for ki in data['K']]
+
+	# Number of states of different kinds
+	########################################
+	num_x_var = len(data['x_vars'])
+	num_u_var = len(data['u_vars'])
+
+	deg_rho = deg_max + 1 - degree(vf)
+
+	print "setting up matrices..."
+	t_start = time.clock()
+
+	# eq (1)
+	T_eq1 = PolyLinTrans(num_x_var + num_u_var, num_x_var + num_u_var)
+	for i in range(num_x_var):
+		dx = PolyLinTrans.diff(num_x_var + num_u_var, deg_rho, i)
+		vf_mul = PolyLinTrans.mul_pol(num_x_var + num_u_var, dx.d1, vf[i])
+		T_eq1 +=  vf_mul * dx
+	T_eq1 = T_eq1 * PolyLinTrans.eye(num_x_var, num_x_var + num_u_var, deg_rho)
+	
+	T_eq1 -= PolyLinTrans.eye(num_x_var, num_x_var + num_u_var, deg_rho) * data['alpha']
+
+	Aeq11, Aeq12, beq1, pos_sdsos1 = add_sdsos(T_eq1, data['tol'], \
+			data['K'] + data['U'], \
+			data['x_vars'] + data['u_vars'], \
+			deg_max)
+
+	# eq (3)
+	T_eq3 = -PolyLinTrans.eye(num_x_var, num_x_var, deg_rho)
+	Aeq31, Aeq32, beq3, pos_sdsos3 = add_sdsos(T_eq3, -1+data['tol'], \
+			data['K'], \
+			data['x_vars'], \
+			deg_max)
+
+	Aeq = scipy.sparse.bmat([[ Aeq11, Aeq12, None], [Aeq31, None, Aeq32]], format='coo') 
+	beq = np.hstack([beq1, beq3])
+
+	pos_sdsos = [(Aeq11.shape[1] + pos, length) for (pos, length) in pos_sdsos1] + \
+				[(Aeq11.shape[1] + Aeq12.shape[1] + pos, length) for (pos, length) in pos_sdsos3]
+
+	# eq(2)
+	T_eq2 = PolyLinTrans.eye(num_x_var, num_x_var, deg_rho)
+	for XK_set_i in XK_set:
+		Aeq21, Aeq22, beq2, pos_sdsos2 = add_sdsos(T_eq2, data['tol'], \
+				XK_set_i, \
+				data['x_vars'], \
+				deg_max)
+		Aeq21 = scipy.sparse.bmat([[Aeq21, _coo_zeros(Aeq21.shape[0], Aeq.shape[1] - Aeq21.shape[1])]])
+
+		pos_sdsos += [(Aeq.shape[1] + pos, length) for (pos, length) in pos_sdsos2]
+
+		Aeq = scipy.sparse.bmat([[Aeq, None], [Aeq21, Aeq22]])
+		beq = np.hstack([beq, beq2])
+
+
+	# objective
+	int_trans = PolyLinTrans.integrate(num_x_var, deg_rho, range(num_x_var), [[-1,1]]*num_x_var)
+	_, _, _, obj_idx, obj_vals = int_trans.to_sparse()
+
+	print "completed in " + str(time.clock() - t_start) + "\n"
+	print "setting up Mosek SOCP..."
+	t_start = time.clock()
+
+	# Set up mosek environment
+	env = mosek.Env() 
+
+	task = env.Task(0,0)
+
+	numcon = Aeq.shape[0]
+	numvar = Aeq.shape[1]
+
+	task.appendvars(numvar) 
+	task.appendcons(numcon)
+
+	# Make all vars unbounded
+	task.putvarboundslice(0, numvar, [mosek.boundkey.fr] * numvar, [0.]*numvar, [0.]*numvar )
+
+	# Add objective function
+	for (i,v) in zip(obj_idx, obj_vals):
+		task.putcj(i, v)
+	task.putobjsense(mosek.objsense.maximize) 
+
+	# Add eq constraints
+	task.putaijlist( Aeq.row, Aeq.col, Aeq.data )
+	task.putconboundslice(0, numcon, [mosek.boundkey.fx] * numcon, beq, beq )
+
+	# Add sdd constraints
+	for pos, length in pos_sdsos:
+		add_sdd_mosek( task, pos, length )
+
+	print "completed in " + str(time.clock() - t_start) + "\n"
+
+	print "optimizing..."
+	t_start = time.clock()
+
+	task.optimize() 
+
+	solsta = task.getsolsta(mosek.soltype.itr)
+
+	if (solsta == mosek.solsta.optimal or solsta == mosek.solsta.near_optimal): 
+		print "completed in " + str(time.clock() - t_start) + "\n"
+		print "status", solsta
+		# extract solution
+		opt_rho = np.zeros(Aeq11.shape[1])
+		task.getxxslice( mosek.soltype.itr, 0, Aeq11.shape[1], opt_rho )
+
+		return coef_to_poly(opt_rho, data['x_vars'])
+
+	else: 
+		print "Optimal solution not found"
+		print solsta
+		return None

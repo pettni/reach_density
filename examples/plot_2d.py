@@ -1,12 +1,15 @@
 import numpy as np
+import sympy as sp
 
 from sympy.utilities.lambdify import lambdify
 import scipy.integrate as integrate
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import cm
 
-def plot2d(variables, vf, rho, error, tfinal):
+def plot2d_reach(variables, vf, rho, error, tfinal):
 
 	def deriv(z,t):
 		return [vf_fcn(t,z[0],z[1])[0], vf_fcn(t,z[0],z[1])[1]]
@@ -43,6 +46,49 @@ def plot2d(variables, vf, rho, error, tfinal):
 		plt.plot(x1[-1], x2[-1], 'ro')
 
 	plt.show()
+
+def plot2d_invariance(rho, data, dvec, ax):
+	
+	xvars = data['x_vars']
+	try:
+		duvars = data['d_vars']
+	except Exception, e:
+		duvars = data['u_vars']
+
+	rho_fcn = sp.lambdify(xvars, rho)
+
+	X1, X2 = np.mgrid[-2:2:500j, -2:2:500j]
+
+	def plotdata_semi(list):
+		l0 = (sp.lambdify(xvars, list[0])(X1, X2) > 0)
+		for i in range(1, len(list)):
+			l0 = l0 * (sp.lambdify(xvars, list[i])(X1, X2) > 0)
+		return l0
+
+	ax.contourf(X1, X2, plotdata_semi(data['K']), levels = [0.5, np.inf], alpha = 0.5, colors='green')
+	ax.contour(X1, X2, rho_fcn(X1, X2), levels = [0], colors=['blue'] )
+
+	X1, X2 = np.mgrid[-2:2:20j, -2:2:20j]
+
+	vf1 = sp.lambdify(xvars + duvars, data['vector_field'][0])
+	vf2 = sp.lambdify(xvars + duvars, data['vector_field'][1])
+
+	for dval in dvec:
+		U1 = vf1(X1, X2, *dval)
+		V1 = vf2(X1, X2, *dval)
+
+		U1_n, V1_n = U1/np.sqrt(U1**2+V1**2), V1/np.sqrt(U1**2+V1**2)
+
+		ax.quiver(X1, X2,  U1_n, V1_n, color='black')
+
+def plot2d_surf(rho, data, ax):
+	
+	rho_fcn = sp.lambdify(data['x_vars'], rho)
+	X1, X2 = np.mgrid[-2:2:50j, -2:2:50j]
+	Z = rho_fcn(X1, X2)
+	Z[Z<-5] = -5
+
+ 	ax.plot_surface(X1, X2, Z, rstride=1, cstride=1, cmap=cm.coolwarm)
 
 
 def animate(variables, vf, rho, error, tmax):
